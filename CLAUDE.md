@@ -137,6 +137,8 @@ Gmail Poller → S3 Upload → Start Step Functions
 
 ### Matching Algorithm (3 factors)
 1. **Amount** (40% weight): Exact match → Tolerance bands
+   - Automatic currency conversion for foreign invoices (USD→GBP)
+   - Uses historical exchange rates from invoice date
 2. **Date** (30% weight): Days difference scoring
 3. **Vendor** (30% weight): AI-powered fuzzy matching (Bedrock Haiku)
 

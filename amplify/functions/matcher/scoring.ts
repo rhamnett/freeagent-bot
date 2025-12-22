@@ -4,6 +4,7 @@
  */
 
 import { compareVendorNames } from '../invoice-processor/bedrock-client';
+import { convertCurrency, needsCurrencyConversion } from './exchange-rate';
 
 interface Invoice {
   id: string;
@@ -26,6 +27,7 @@ interface Transaction {
 type MatchReason =
   | 'amount_exact'
   | 'amount_close'
+  | 'amount_converted'
   | 'date_exact'
   | 'date_close'
   | 'date_within_month'
@@ -93,7 +95,7 @@ function calculateAmountScore(
   }
 
   // Reasonable (within 10%) - accounts for currency conversion, fees, tax differences
-  if (percentDiff < 0.10) {
+  if (percentDiff < 0.1) {
     return { score: 0.4, reason: 'amount_close' };
   }
 
@@ -195,7 +197,9 @@ async function calculateVendorScore(
 }
 
 /**
- * Calculate overall match score for an invoice-transaction pair
+ * Calculate overall match score for an invoice-transaction pair.
+ * Handles currency conversion when invoice is in a different currency (e.g., USD)
+ * but the bank transaction is in GBP.
  */
 export async function calculateMatchScore(
   invoice: Invoice,
@@ -205,16 +209,52 @@ export async function calculateMatchScore(
   const reasons: MatchReason[] = [];
   let totalScore = 0;
 
-  // Amount score
-  const amountScore = calculateAmountScore(
-    invoice.totalAmount,
+  // Get the transaction amount to compare against
+  const transactionAmount =
     transaction.type === 'BANK_TRANSACTION'
       ? (transaction.unexplainedAmount ?? transaction.amount)
-      : transaction.amount
-  );
+      : transaction.amount;
+
+  // Handle currency conversion if needed
+  // UK bank transactions are in GBP, but invoices may be in USD, EUR, etc.
+  let invoiceAmountForComparison = invoice.totalAmount;
+  let currencyConverted = false;
+
+  if (invoice.totalAmount !== undefined && needsCurrencyConversion(invoice.currency, 'GBP')) {
+    // Invoice is in a foreign currency, convert to GBP using invoice date rate
+    const conversionDate = invoice.invoiceDate ?? new Date().toISOString().split('T')[0];
+
+    try {
+      const { convertedAmount, rate } = await convertCurrency(
+        invoice.totalAmount,
+        invoice.currency ?? 'USD',
+        'GBP',
+        conversionDate
+      );
+
+      console.log(
+        `Currency conversion: ${invoice.currency} ${invoice.totalAmount} -> GBP ${convertedAmount} (rate: ${rate} on ${conversionDate})`
+      );
+
+      invoiceAmountForComparison = convertedAmount;
+      currencyConverted = true;
+    } catch (error) {
+      console.error('Currency conversion failed, using original amount:', error);
+      // Fall back to original amount - matching may still work with tolerance
+    }
+  }
+
+  // Amount score (using converted amount if applicable)
+  const amountScore = calculateAmountScore(invoiceAmountForComparison, transactionAmount);
   totalScore += amountScore.score * config.amountWeight;
+
   if (amountScore.reason) {
     reasons.push(amountScore.reason);
+  }
+
+  // Add currency conversion reason if we converted and got a good match
+  if (currencyConverted && amountScore.score >= 0.4) {
+    reasons.push('amount_converted');
   }
 
   // Date score

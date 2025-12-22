@@ -65,6 +65,61 @@ const compareAmount = transaction.type === 'BANK_TRANSACTION'
 - **Tax rounding**: VAT calculation differences
 - **Partial payments**: Split payments across multiple transactions
 
+## Currency Conversion
+
+When an invoice arrives in a foreign currency (e.g., USD) but the bank transaction is in GBP, the system automatically converts the invoice amount using historical exchange rates.
+
+### How It Works
+
+```
+Invoice: USD $123.45, dated 2024-01-15
+Bank Transaction: GBP £97.53
+
+1. Detect currency mismatch (USD ≠ GBP)
+2. Fetch exchange rate for invoice date (2024-01-15)
+3. Convert: $123.45 × 0.79 = £97.53
+4. Compare converted amount to bank transaction
+5. If match found, add 'amount_converted' to reasons
+```
+
+### Exchange Rate Service
+
+The system uses the exchangerate.host API for historical exchange rates:
+
+```typescript
+// Get rate for specific date
+const rate = await getExchangeRate('USD', 'GBP', '2024-01-15');
+
+// Convert amount
+const { convertedAmount, rate } = await convertCurrency(
+  123.45,  // Original USD amount
+  'USD',   // From currency
+  'GBP',   // To currency
+  '2024-01-15'  // Date for historical rate
+);
+```
+
+### Fallback Rates
+
+If the API is unavailable, hardcoded fallback rates are used:
+
+| From | To | Approximate Rate |
+|------|-----|-----------------|
+| USD | GBP | 0.79 |
+| USD | EUR | 0.92 |
+| EUR | GBP | 0.86 |
+
+### Match Reasons
+
+When currency conversion is used and results in a good match:
+
+```typescript
+reasons: ['amount_exact', 'amount_converted', 'vendor_match']
+//                        ^^^^^^^^^^^^^^^^^ indicates conversion was used
+```
+
+This helps during manual review to understand why the amounts matched despite being in different currencies on the original documents.
+
 ## Date Scoring
 
 Measures the proximity between invoice date and transaction date:
@@ -158,6 +213,7 @@ Each match includes reasons explaining why it was considered a match:
 type MatchReason =
   | 'amount_exact'      // Amount within £0.01
   | 'amount_close'      // Amount within tolerance
+  | 'amount_converted'  // Amount matched after currency conversion
   | 'date_exact'        // Same day or next day
   | 'date_close'        // Within 2 weeks
   | 'date_within_month' // Within 30 days
