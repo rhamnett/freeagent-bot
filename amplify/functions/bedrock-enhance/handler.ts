@@ -9,6 +9,20 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { Handler } from 'aws-lambda';
 
+interface CandidateAmount {
+  value: number;
+  type: string;
+  currency?: string;
+  label?: string;
+  confidence: number;
+}
+
+interface CandidateVendor {
+  name: string;
+  type: string;
+  confidence: number;
+}
+
 interface ExtractedInvoiceData {
   vendorName?: string;
   invoiceNumber?: string;
@@ -22,6 +36,10 @@ interface ExtractedInvoiceData {
     unitPrice?: number;
     amount: number;
   }>;
+  // New: All candidate amounts from Textract for LLM selection
+  candidateAmounts?: CandidateAmount[];
+  candidateVendors?: CandidateVendor[];
+  candidateDates?: string[];
   confidence: number;
 }
 
@@ -53,6 +71,14 @@ interface BedrockMessage {
           data: string;
         };
       }
+    | {
+        type: 'document';
+        source: {
+          type: 'base64';
+          media_type: string;
+          data: string;
+        };
+      }
   >;
 }
 
@@ -74,9 +100,10 @@ const INVOICE_TABLE = process.env.INVOICE_TABLE ?? '';
 // Claude Sonnet 4.5 via EU inference profile
 const CLAUDE_SONNET_MODEL = 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0';
 
-const ENHANCEMENT_THRESHOLD = 0.7;
+// Always run Bedrock for all invoices to ensure accurate extraction
+// especially for multi-currency invoices like AWS
 
-const INVOICE_EXTRACTION_PROMPT = `Analyze this invoice/receipt image and extract the following information in JSON format:
+const INVOICE_EXTRACTION_PROMPT = `Analyze this invoice/receipt and extract the following information in JSON format:
 
 {
   "vendorName": "The company or person who issued the invoice",
@@ -95,33 +122,31 @@ const INVOICE_EXTRACTION_PROMPT = `Analyze this invoice/receipt image and extrac
   ]
 }
 
-Important:
+CRITICAL RULES:
 - Return ONLY the JSON object, no other text
 - Use null for any fields you cannot determine with confidence
 - For amounts, extract the numeric value only (e.g., 123.45 not "£123.45")
 - For dates, use YYYY-MM-DD format
-- Focus on the TOTAL amount, not subtotals or deposits
-- If this is not an invoice/receipt, return {"error": "Not an invoice"}`;
+- If this is not an invoice/receipt, return {"error": "Not an invoice"}
+
+MULTI-CURRENCY HANDLING (VERY IMPORTANT):
+- This is for a UK business, so prefer GBP amounts when available
+- If the invoice shows BOTH USD and GBP amounts (e.g., AWS invoices with currency conversion):
+  - Extract the GBP TOTAL as totalAmount (the amount that would appear on a UK bank statement)
+  - Set currency to "GBP"
+  - Look for the converted/local currency total, NOT the original USD amount
+- For AWS/Amazon invoices specifically: find the "Total for this invoice in GBP" or similar GBP total
+- The correct GBP amount is what the bank will charge, after any currency conversion`;
 
 export const handler: Handler<BedrockEnhanceEvent, BedrockEnhanceResult> = async (event) => {
   const { invoiceId, userId: _userId, s3Key, bucketName, extractedData, confidence } = event;
 
-  console.log(`Bedrock enhance for invoice ${invoiceId}, current confidence: ${confidence}`);
+  console.log(`Bedrock enhance for invoice ${invoiceId}, Textract confidence: ${confidence}`);
+  console.log(`Candidate amounts from Textract: ${extractedData.candidateAmounts?.length || 0}`);
+  console.log(`Candidate vendors from Textract: ${extractedData.candidateVendors?.length || 0}`);
 
-  // Check if enhancement is needed
-  if (confidence >= ENHANCEMENT_THRESHOLD && hasRequiredFields(extractedData)) {
-    console.log(
-      `Invoice ${invoiceId} has sufficient confidence and required fields, skipping enhancement`
-    );
-    return {
-      invoiceId,
-      enhanced: false,
-      data: extractedData,
-      confidence,
-    };
-  }
-
-  console.log(`Enhancing invoice ${invoiceId} with Bedrock Claude`);
+  // Always run Bedrock for accurate extraction, especially multi-currency handling
+  console.log(`Processing invoice ${invoiceId} with Bedrock Claude Vision`);
 
   // Update processing step
   await ddbClient.send(
@@ -151,8 +176,8 @@ export const handler: Handler<BedrockEnhanceEvent, BedrockEnhanceResult> = async
 
   const mimeType = getMimeType(s3Key);
 
-  // Call Bedrock for extraction
-  const bedrockData = await extractInvoiceWithBedrock(Buffer.from(imageBytes), mimeType);
+  // Call Bedrock for extraction, passing Textract data for context
+  const bedrockData = await extractInvoiceWithBedrock(Buffer.from(imageBytes), mimeType, extractedData);
 
   console.log(`Bedrock extraction result:`, JSON.stringify(bedrockData));
 
@@ -191,13 +216,6 @@ export const handler: Handler<BedrockEnhanceEvent, BedrockEnhanceResult> = async
 };
 
 /**
- * Check if invoice has required fields
- */
-function hasRequiredFields(data: ExtractedInvoiceData): boolean {
-  return !!(data.vendorName && data.totalAmount && (data.invoiceDate || data.invoiceNumber));
-}
-
-/**
  * Get MIME type from file extension
  */
 function getMimeType(filename: string): string {
@@ -224,7 +242,8 @@ function getMimeType(filename: string): string {
  */
 async function extractInvoiceWithBedrock(
   imageBytes: Buffer,
-  mimeType: string
+  mimeType: string,
+  textractData?: ExtractedInvoiceData
 ): Promise<ExtractedInvoiceData> {
   const base64Image = imageBytes.toString('base64');
 
@@ -254,6 +273,57 @@ async function extractInvoiceWithBedrock(
   // Use 'document' type for PDFs, 'image' for images
   const contentType = mimeType.toLowerCase() === 'application/pdf' ? 'document' : 'image';
   
+  // Build the prompt with ALL candidate data from Textract for intelligent selection
+  let promptText = INVOICE_EXTRACTION_PROMPT;
+  
+  if (textractData) {
+    // Format candidate amounts for clear presentation
+    const candidateAmountsText = textractData.candidateAmounts?.length 
+      ? textractData.candidateAmounts.map(a => 
+          `  - ${a.currency || '?'} ${a.value.toFixed(2)} (${a.type}: "${a.label || a.type}")`
+        ).join('\n')
+      : '  (none detected)';
+    
+    // Format candidate vendors
+    const candidateVendorsText = textractData.candidateVendors?.length
+      ? textractData.candidateVendors.map(v => 
+          `  - "${v.name}" (${v.type})`
+        ).join('\n')
+      : '  (none detected)';
+    
+    // Format candidate dates
+    const candidateDatesText = textractData.candidateDates?.length
+      ? textractData.candidateDates.map(d => `  - "${d}"`).join('\n')
+      : '  (none detected)';
+
+    promptText += `
+
+=== OCR EXTRACTION DATA (from AWS Textract) ===
+
+CANDIDATE AMOUNTS (choose the correct GBP total for UK bank matching):
+${candidateAmountsText}
+
+CANDIDATE VENDORS:
+${candidateVendorsText}
+
+CANDIDATE DATES:
+${candidateDatesText}
+
+CURRENT BEST GUESSES (may be wrong):
+- Vendor: ${textractData.vendorName || 'unknown'}
+- Amount: ${textractData.totalAmount || 'unknown'} ${textractData.currency || ''}
+- Date: ${textractData.invoiceDate || 'unknown'}
+
+=== YOUR TASK ===
+
+1. Look at the actual document image above
+2. Review the candidate amounts and select the CORRECT GBP total that would match a UK bank statement
+3. For AWS invoices: The "TOTAL AMOUNT" in GBP (not USD) is what the bank charges
+4. Verify the vendor name - prefer the actual issuer (e.g., "AMAZON WEB SERVICES EMEA SARL" not the recipient)
+5. Convert dates to YYYY-MM-DD format
+6. Return corrected JSON`;
+  }
+  
   const messages: BedrockMessage[] = [
     {
       role: 'user',
@@ -268,7 +338,7 @@ async function extractInvoiceWithBedrock(
         },
         {
           type: 'text',
-          text: INVOICE_EXTRACTION_PROMPT,
+          text: promptText,
         },
       ],
     },
@@ -340,21 +410,27 @@ async function extractInvoiceWithBedrock(
 
 /**
  * Merge Textract and Bedrock extraction results
- * Prefer Bedrock for missing fields, keep Textract where both exist
+ * PREFER BEDROCK for key fields since it makes intelligent selections from candidates
+ * Bedrock sees both the document AND the Textract data, so it can correct errors
  */
 function mergeExtractionResults(
   textract: ExtractedInvoiceData,
   bedrock: ExtractedInvoiceData
 ): ExtractedInvoiceData {
   return {
-    vendorName: textract.vendorName || bedrock.vendorName,
-    invoiceNumber: textract.invoiceNumber || bedrock.invoiceNumber,
-    invoiceDate: textract.invoiceDate || bedrock.invoiceDate,
-    dueDate: textract.dueDate || bedrock.dueDate,
-    totalAmount: textract.totalAmount ?? bedrock.totalAmount,
-    currency: textract.currency || bedrock.currency,
+    // Prefer Bedrock's vendor (it can distinguish issuer from recipient)
+    vendorName: bedrock.vendorName || textract.vendorName,
+    // Prefer Bedrock's invoice number
+    invoiceNumber: bedrock.invoiceNumber || textract.invoiceNumber,
+    // Prefer Bedrock's date (it converts to ISO format)
+    invoiceDate: bedrock.invoiceDate || textract.invoiceDate,
+    dueDate: bedrock.dueDate || textract.dueDate,
+    // CRITICALLY: Prefer Bedrock's amount (it selects correct GBP from candidates)
+    totalAmount: bedrock.totalAmount ?? textract.totalAmount,
+    currency: bedrock.currency || textract.currency,
+    // Keep Textract line items as they're more detailed
     lineItems: textract.lineItems?.length ? textract.lineItems : bedrock.lineItems,
-    // Average confidence, weighted toward Bedrock when it was used
-    confidence: (textract.confidence + bedrock.confidence) / 2,
+    // High confidence since Bedrock verified/corrected
+    confidence: 0.95,
   };
 }

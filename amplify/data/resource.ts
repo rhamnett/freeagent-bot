@@ -89,12 +89,15 @@ const schema = a.schema({
       extractionConfidence: a.float(),
       rawTextractOutput: a.json(),
       // Step Functions async processing fields
-      currentTaskToken: a.string(), // Step Functions task token for callback
+      taskToken: a.string(), // Step Functions task token for callback
       textractJobId: a.string(), // Textract async job ID
       processingStep: a.ref('ProcessingStep'), // Current step in the workflow
       stepFunctionExecutionArn: a.string(), // ARN of the Step Functions execution
     })
-    .secondaryIndexes((index) => [index('gmailMessageId').name('byGmailMessageId')])
+    .secondaryIndexes((index) => [
+      index('gmailMessageId').name('byGmailMessageId'),
+      index('textractJobId').name('byTextractJobId'),
+    ])
     .authorization((allow) => [allow.owner()]),
 
   // ============================================================================

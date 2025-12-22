@@ -148,14 +148,41 @@ export async function clearAllData(userId: string): Promise<ClearDataResult> {
 				// Reset poll timestamps by setting to a very old date
 				try {
 					const oldDate = "2000-01-01T00:00:00.000Z";
-					await client.models.UserSettings.update({
-						userId,
-						lastGmailPollAt: oldDate,
-						lastFreeAgentSyncAt: oldDate,
-					});
-					console.log("Reset poll timestamps to:", oldDate);
+					
+					// First try to get existing settings
+					const existingSettings = await client.models.UserSettings.get({ userId });
+					
+					if (existingSettings.data) {
+						// Update existing record
+						await client.models.UserSettings.update({
+							userId,
+							lastGmailPollAt: oldDate,
+							lastFreeAgentSyncAt: oldDate,
+						});
+						console.log("Updated existing settings - reset poll timestamps to:", oldDate);
+					} else {
+						// Create new record with reset timestamps
+						await client.models.UserSettings.create({
+							userId,
+							lastGmailPollAt: oldDate,
+							lastFreeAgentSyncAt: oldDate,
+						});
+						console.log("Created new settings with poll timestamps:", oldDate);
+					}
 				} catch (settingsError) {
-					console.log("Settings reset error (may not exist):", settingsError);
+					console.error("Settings reset error:", settingsError);
+					// Try direct create as fallback
+					try {
+						const oldDate = "2000-01-01T00:00:00.000Z";
+						await client.models.UserSettings.create({
+							userId,
+							lastGmailPollAt: oldDate,
+							lastFreeAgentSyncAt: oldDate,
+						});
+						console.log("Fallback: Created settings with reset timestamps");
+					} catch (createError) {
+						console.error("Settings create fallback also failed:", createError);
+					}
 				}
 
 				return {

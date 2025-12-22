@@ -112,21 +112,19 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
     console.log('User settings:', JSON.stringify(settings));
     console.log('Force full scan:', forceFullScan);
 
-    // If forceFullScan is true, ignore lastGmailPollAt and scan back 30 days
-    // This ensures we capture older invoices like AWS invoices from early Dec
-    const lastPollDate = forceFullScan
-      ? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      : settings?.lastGmailPollAt
-        ? new Date(settings.lastGmailPollAt)
-        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default to 30 days ago
+    // TEMPORARY: For testing, scan December 1st-4th 2025 to speed things up
+    // TODO: Revert to normal date logic after testing
+    const lastPollDate = new Date('2025-12-01T00:00:00Z');
+    const beforeDate = new Date('2025-12-05T00:00:00Z');
+    console.log('TEMPORARY: Limited to Dec 1st-4th for testing');
 
-    console.log(`Querying Gmail for messages since: ${lastPollDate.toISOString()}`);
+    console.log(`Querying Gmail for messages between: ${lastPollDate.toISOString()} and ${beforeDate.toISOString()}`);
 
     // Initialize Gmail client
     const gmailClient = new GmailClient(oauth.secretArn, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 
-    // List messages with attachments since last poll
-    const messages = await gmailClient.listMessagesWithAttachments(lastPollDate, 50);
+    // List messages with attachments from Dec 2nd only
+    const messages = await gmailClient.listMessagesWithAttachments(lastPollDate, 50, beforeDate);
 
     console.log(`Found ${messages.length} messages with attachments`);
 

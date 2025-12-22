@@ -92,6 +92,31 @@ const bedrockEnhanceRole = getLambdaRole(bedrockEnhanceLambda, 'bedrockEnhance')
  * Get storage bucket ARN
  */
 const storageBucketArn = backend.storage.resources.bucket.bucketArn;
+const storageBucketName = backend.storage.resources.bucket.bucketName;
+
+// ============================================================================
+// Allow Textract service principal to access Amplify storage bucket directly
+// ============================================================================
+
+backend.storage.resources.bucket.addToResourcePolicy(
+  new iam.PolicyStatement({
+    sid: 'AllowTextractServicePrincipalRead',
+    effect: iam.Effect.ALLOW,
+    principals: [new iam.ServicePrincipal('textract.amazonaws.com')],
+    actions: ['s3:GetObject', 's3:GetObjectVersion', 's3:GetObjectAcl'],
+    resources: [`${storageBucketArn}/*`],
+  })
+);
+
+backend.storage.resources.bucket.addToResourcePolicy(
+  new iam.PolicyStatement({
+    sid: 'AllowTextractServicePrincipalList',
+    effect: iam.Effect.ALLOW,
+    principals: [new iam.ServicePrincipal('textract.amazonaws.com')],
+    actions: ['s3:ListBucket', 's3:GetBucketLocation'],
+    resources: [storageBucketArn],
+  })
+);
 
 // ============================================================================
 // Step Functions Infrastructure (SNS Topic, IAM Role, State Machine)
@@ -103,9 +128,38 @@ const textractNotificationTopic = new sns.Topic(backendStack, 'TextractNotificat
   displayName: 'Textract Job Notifications',
 });
 
-// Use the textract-request Lambda's role for SNS notifications
-// This avoids bucket policy issues since Amplify grants Lambda roles S3 access
-textractNotificationTopic.grantPublish(textractRequestRole);
+// Create a dedicated IAM role for Textract to assume
+// This role must be assumable by textract.amazonaws.com and needs BOTH S3 and SNS permissions
+const textractSnsRole = new iam.Role(backendStack, 'TextractSnsRole', {
+  assumedBy: new iam.ServicePrincipal('textract.amazonaws.com'),
+  description: 'Role for Textract to access S3 and publish SNS notifications',
+});
+
+// Grant the Textract role FULL S3 permissions on the storage bucket
+// This is CRITICAL - Textract uses this role to read from S3!
+// Using s3:* as per working ordo-next-ts project
+textractSnsRole.addToPolicy(
+  new iam.PolicyStatement({
+    sid: 'AllowTextractS3Access',
+    effect: iam.Effect.ALLOW,
+    actions: ['s3:*'],
+    resources: [storageBucketArn, `${storageBucketArn}/*`],
+  })
+);
+
+// Grant the Textract SNS role permission to publish to the SNS topic
+textractNotificationTopic.grantPublish(textractSnsRole);
+
+// Grant Textract service permission to publish to SNS topic (belt and suspenders)
+textractNotificationTopic.addToResourcePolicy(
+  new iam.PolicyStatement({
+    sid: 'AllowTextractPublish',
+    effect: iam.Effect.ALLOW,
+    principals: [new iam.ServicePrincipal('textract.amazonaws.com')],
+    actions: ['sns:Publish'],
+    resources: [textractNotificationTopic.topicArn],
+  })
+);
 
 // Subscribe textract-retrieve Lambda to SNS topic
 textractNotificationTopic.addSubscription(
@@ -172,8 +226,11 @@ matcherLambda.addEnvironment('TRANSACTION_TABLE', commonEnvVars.TRANSACTION_TABL
 matcherLambda.addEnvironment('MATCH_TABLE', commonEnvVars.MATCH_TABLE);
 matcherLambda.addEnvironment('SETTINGS_TABLE', commonEnvVars.SETTINGS_TABLE);
 
-// Textract Request environment (synchronous processing - no SNS needed)
+// Textract Request environment (async processing with SNS)
 textractRequestLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
+textractRequestLambda.addEnvironment('STORAGE_BUCKET_NAME', storageBucketName);
+textractRequestLambda.addEnvironment('TEXTRACT_SNS_TOPIC_ARN', textractNotificationTopic.topicArn);
+textractRequestLambda.addEnvironment('TEXTRACT_SNS_ROLE_ARN', textractSnsRole.roleArn);
 
 // Textract Retrieve environment
 textractRetrieveLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
@@ -226,44 +283,51 @@ attachSecretsManagerPermissions(backendStack, oauthTokenStoreRole, 'OAuthTokenSt
 // Step Functions Lambda Permissions
 // ============================================================================
 
-// Textract Request permissions - Synchronous Textract analysis
-// Lambda downloads file from S3 and sends bytes to Textract (avoids bucket policy issues)
+// Textract Request permissions - Async Textract analysis
 textractRequestRole.attachInlinePolicy(
   new iam.Policy(backendStack, 'TextractRequestPolicy', {
     statements: [
-      // Synchronous Textract API (AnalyzeExpense for invoices, DetectDocumentText as fallback)
+      // Async Textract API (StartExpenseAnalysis, StartDocumentAnalysis)
       new iam.PolicyStatement({
-        sid: 'AllowTextractAPIs',
+        sid: 'AllowAsyncTextractAPIs',
         effect: iam.Effect.ALLOW,
-        actions: ['textract:AnalyzeExpense', 'textract:AnalyzeDocument', 'textract:DetectDocumentText'],
+        actions: [
+          'textract:StartExpenseAnalysis',
+          'textract:StartDocumentAnalysis',
+          'textract:StartDocumentTextDetection',
+        ],
         resources: ['*'],
       }),
-      // S3 access to download invoice files
+      // S3 permissions - Lambda also needs S3 access (as per ordo-next-ts pattern)
       new iam.PolicyStatement({
-        sid: 'AllowS3GetObject',
+        sid: 'AllowS3Access',
         effect: iam.Effect.ALLOW,
-        actions: ['s3:GetObject'],
-        resources: [`${storageBucketArn}/*`],
+        actions: ['s3:*'],
+        resources: [storageBucketArn, `${storageBucketArn}/*`],
       }),
-      // Step Functions callback
+      // PassRole to allow Lambda to pass the Textract SNS role
       new iam.PolicyStatement({
-        sid: 'AllowStepFunctionsCallback',
+        sid: 'AllowPassRoleToTextract',
         effect: iam.Effect.ALLOW,
-        actions: ['states:SendTaskSuccess', 'states:SendTaskFailure'],
-        resources: ['*'],
+        actions: ['iam:PassRole'],
+        resources: [textractSnsRole.roleArn],
       }),
     ],
   })
 );
 
-// Textract Retrieve permissions - Get results and send Step Functions callback
+// Textract Retrieve permissions - Get async results and send Step Functions callback
 textractRetrieveRole.attachInlinePolicy(
   new iam.Policy(backendStack, 'TextractRetrievePolicy', {
     statements: [
       new iam.PolicyStatement({
-        sid: 'AllowGetExpenseAnalysis',
+        sid: 'AllowGetTextractResults',
         effect: iam.Effect.ALLOW,
-        actions: ['textract:GetExpenseAnalysis'],
+        actions: [
+          'textract:GetExpenseAnalysis',
+          'textract:GetDocumentAnalysis',
+          'textract:GetDocumentTextDetection',
+        ],
         resources: ['*'],
       }),
       new iam.PolicyStatement({
@@ -389,7 +453,7 @@ new CfnOutput(backendStack, 'TextractNotificationTopicArn', {
   description: 'Textract SNS notification topic ARN',
 });
 
-new CfnOutput(backendStack, 'TextractRoleArn', {
-  value: textractRequestRole.roleArn,
-  description: 'Textract request Lambda role ARN (used for Textract notifications)',
+new CfnOutput(backendStack, 'TextractSnsRoleArn', {
+  value: textractSnsRole.roleArn,
+  description: 'IAM role ARN for Textract to publish SNS notifications',
 });

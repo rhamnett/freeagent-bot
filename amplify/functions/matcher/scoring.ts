@@ -89,7 +89,17 @@ function calculateAmountScore(
 
   // Close (within 5%)
   if (percentDiff < 0.05) {
-    return { score: 0.5, reason: 'amount_close' };
+    return { score: 0.6, reason: 'amount_close' };
+  }
+
+  // Reasonable (within 10%) - accounts for currency conversion, fees, tax differences
+  if (percentDiff < 0.10) {
+    return { score: 0.4, reason: 'amount_close' };
+  }
+
+  // Loose match (within 15%) - still worth reviewing
+  if (percentDiff < 0.15) {
+    return { score: 0.2, reason: 'amount_close' };
   }
 
   // No match

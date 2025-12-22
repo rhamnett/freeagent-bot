@@ -13,10 +13,9 @@ import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
  *
  * Flow:
  * 1. Start Textract async job (WAIT_FOR_TASK_TOKEN)
- * 2. Check confidence level
- * 3. If low confidence: Enhance with Bedrock
- * 4. Run matcher
- * 5. Complete
+ * 2. ALWAYS enhance with Bedrock (passes candidate amounts for intelligent selection)
+ * 3. Run matcher
+ * 4. Complete
  */
 export function createInvoiceProcessorStateMachine(
   stack: Stack,
@@ -73,18 +72,7 @@ export function createInvoiceProcessorStateMachine(
 
   prepareForMatcherAfterBedrock.next(runMatcher);
 
-  // Pass state to prepare data for matcher after Textract (skipping Bedrock)
-  const prepareForMatcherDirect = new sfn.Pass(stack, 'PrepareForMatcherDirect', {
-    parameters: {
-      invoiceId: sfn.JsonPath.stringAt('$.invoiceId'),
-      userId: sfn.JsonPath.stringAt('$.userId'),
-      textractResult: sfn.JsonPath.objectAt('$.textractResult'),
-    },
-  });
-
-  prepareForMatcherDirect.next(runMatcher);
-
-  // Pass state for when Bedrock fails - go directly to matcher
+  // Pass state for when Bedrock fails - go directly to matcher with Textract data
   const prepareForMatcherOnBedrockError = new sfn.Pass(stack, 'PrepareForMatcherOnBedrockError', {
     parameters: {
       invoiceId: sfn.JsonPath.stringAt('$.invoiceId'),
@@ -121,15 +109,10 @@ export function createInvoiceProcessorStateMachine(
 
   enhanceWithBedrock.next(prepareForMatcherAfterBedrock);
 
-  // Add catch for Bedrock failures (continue to matcher anyway)
+  // Add catch for Bedrock failures (continue to matcher anyway with Textract data)
   enhanceWithBedrock.addCatch(prepareForMatcherOnBedrockError, {
     resultPath: '$.bedrockError',
   });
-
-  // Choice: Check if Bedrock enhancement is needed (confidence < 0.7)
-  const needsEnhancement = new sfn.Choice(stack, 'NeedsEnhancement')
-    .when(sfn.Condition.numberLessThan('$.textractResult.confidence', 0.7), enhanceWithBedrock)
-    .otherwise(prepareForMatcherDirect);
 
   // Step 1: Start Textract (WAIT_FOR_TASK_TOKEN pattern)
   // This step will pause until textract-retrieve sends SendTaskSuccess/Failure
@@ -172,7 +155,8 @@ export function createInvoiceProcessorStateMachine(
     errors: ['InvalidS3ObjectException'],
   });
 
-  startTextract.next(needsEnhancement);
+  // Always run Bedrock for intelligent amount/vendor selection
+  startTextract.next(enhanceWithBedrock);
 
   // Add catch for Textract failures
   startTextract.addCatch(failure, {
@@ -185,6 +169,6 @@ export function createInvoiceProcessorStateMachine(
     timeout: Duration.minutes(15),
     stateMachineName: 'freeagent-bot-invoice-processor',
     tracingEnabled: true,
-    comment: 'Async invoice processing with Textract and optional Bedrock enhancement',
+    comment: 'Invoice processing: Textract extraction -> Bedrock intelligent selection -> Matcher',
   });
 }

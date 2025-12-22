@@ -185,7 +185,8 @@ export class GmailClient {
    */
   async listMessagesWithAttachments(
     sinceDate?: Date,
-    maxResults = 50
+    maxResults = 50,
+    beforeDate?: Date
   ): Promise<Array<{ id: string; threadId: string }>> {
     const query: string[] = ['has:attachment'];
 
@@ -196,6 +197,12 @@ export class GmailClient {
     if (sinceDate) {
       const dateStr = sinceDate.toISOString().split('T')[0].replace(/-/g, '/');
       query.push(`after:${dateStr}`);
+    }
+    
+    // Filter by end date if provided
+    if (beforeDate) {
+      const dateStr = beforeDate.toISOString().split('T')[0].replace(/-/g, '/');
+      query.push(`before:${dateStr}`);
     }
 
     const queryStr = encodeURIComponent(query.join(' '));
