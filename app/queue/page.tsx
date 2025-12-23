@@ -1,10 +1,12 @@
 'use client';
 
+import { fetchAuthSession } from 'aws-amplify/auth';
 import { generateClient } from 'aws-amplify/data';
-import { CheckCircle, RefreshCw, Wifi, X } from 'lucide-react';
+import { CheckCircle, Paperclip, RefreshCw, Wifi, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { Schema } from '@/amplify/data/resource';
+import { approveMatchWithAttachment } from '@/app/actions/match-actions';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -137,21 +139,43 @@ export default function QueuePage() {
     setProcessing(matchId);
     const match = matchDetails.get(matchId);
     try {
-      await client.models.Match.update({
-        id: matchId,
-        status: 'APPROVED',
-        reviewedAt: new Date().toISOString(),
-      });
+      // Get current user ID
+      const session = await fetchAuthSession();
+      const userId = session.tokens?.idToken?.payload?.sub;
 
-      toast.success('Match approved', {
-        description: match?.invoice?.vendorName ?? 'Match has been approved',
-      });
+      if (!userId) {
+        throw new Error('User not authenticated');
+      }
 
-      // Clear selection - real-time subscription will remove from list
+      // Call server action to approve and attach invoice to FreeAgent
+      const result = await approveMatchWithAttachment(matchId, userId);
+
+      if (!result.success) {
+        throw new Error(result.error ?? 'Failed to approve match');
+      }
+
+      if (result.attachmentUploaded) {
+        toast.success('Match approved & invoice attached', {
+          description: `${match?.invoice?.vendorName ?? 'Invoice'} attached to FreeAgent transaction`,
+        });
+      } else {
+        toast.success('Match approved', {
+          description: match?.invoice?.vendorName ?? 'Match has been approved',
+        });
+      }
+
+      // Optimistically remove from local state (Lambda bypasses AppSync subscriptions)
+      setMatchDetails((prev) => {
+        const next = new Map(prev);
+        next.delete(matchId);
+        return next;
+      });
       setSelectedMatch(null);
     } catch (error) {
       console.error('Error approving match:', error);
-      toast.error('Failed to approve match');
+      toast.error('Failed to approve match', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setProcessing(null);
     }
@@ -171,7 +195,12 @@ export default function QueuePage() {
         description: match?.invoice?.vendorName ?? 'Match has been rejected',
       });
 
-      // Clear selection - real-time subscription will remove from list
+      // Optimistically remove from local state
+      setMatchDetails((prev) => {
+        const next = new Map(prev);
+        next.delete(matchId);
+        return next;
+      });
       setSelectedMatch(null);
     } catch (error) {
       console.error('Error rejecting match:', error);
@@ -394,12 +423,13 @@ export default function QueuePage() {
                       {processing === selectedMatch.id ? (
                         <>
                           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                          Processing...
+                          Attaching to FreeAgent...
                         </>
                       ) : (
                         <>
                           <CheckCircle className="mr-2 h-4 w-4" />
                           Approve
+                          <Paperclip className="ml-1 h-3 w-3" />
                         </>
                       )}
                     </Button>

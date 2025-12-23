@@ -4,6 +4,7 @@
  */
 
 import { a, type ClientSchema, defineData } from '@aws-amplify/backend';
+import { approveMatch } from '../functions/approve-match/resource';
 import { freeagentSync } from '../functions/freeagent-sync/resource';
 import { gmailPoller } from '../functions/gmail-poller/resource';
 import { oauthTokenStore } from '../functions/oauth-token-store/resource';
@@ -26,6 +27,12 @@ const schema = a
       invoiceIds: a.string().array(),
       bankTransactions: a.integer(),
       bills: a.integer(),
+      error: a.string(),
+    }),
+    ApproveMatchResult: a.customType({
+      success: a.boolean().required(),
+      matchId: a.string(),
+      attachmentUploaded: a.boolean(),
       error: a.string(),
     }),
     // ============================================================================
@@ -221,8 +228,25 @@ const schema = a
       .returns(a.ref('SyncResult'))
       .authorization((allow) => [allow.authenticated()])
       .handler(a.handler.function(freeagentSync)),
+
+    // ============================================================================
+    // Match approval with FreeAgent attachment
+    // ============================================================================
+    approveMatchWithAttachment: a
+      .mutation()
+      .arguments({
+        matchId: a.string().required(),
+        userId: a.string().required(),
+      })
+      .returns(a.ref('ApproveMatchResult'))
+      .authorization((allow) => [allow.authenticated()])
+      .handler(a.handler.function(approveMatch)),
   })
-  .authorization((allow) => [allow.resource(freeagentSync), allow.resource(gmailPoller)]);
+  .authorization((allow) => [
+    allow.resource(freeagentSync),
+    allow.resource(gmailPoller),
+    allow.resource(approveMatch),
+  ]);
 
 export type Schema = ClientSchema<typeof schema>;
 

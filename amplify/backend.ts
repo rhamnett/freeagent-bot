@@ -20,6 +20,7 @@ import {
 import { auth } from './auth/resource';
 import { createInvoiceProcessorStateMachine } from './cdk/invoice-processor-sfn';
 import { data } from './data/resource';
+import { approveMatch } from './functions/approve-match/resource';
 import { bedrockEnhance } from './functions/bedrock-enhance/resource';
 import { freeagentSync } from './functions/freeagent-sync/resource';
 import { gmailPoller } from './functions/gmail-poller/resource';
@@ -41,6 +42,7 @@ const backend = defineBackend({
   invoiceProcessor, // Keep for backward compatibility, will be deprecated
   freeagentSync,
   matcher,
+  approveMatch,
   oauthTokenStore,
   // New Step Functions-based Lambda functions
   textractRequest,
@@ -60,6 +62,7 @@ const gmailPollerLambda = backend.gmailPoller.resources.lambda as NodejsFunction
 const invoiceProcessorLambda = backend.invoiceProcessor.resources.lambda as NodejsFunction;
 const freeagentSyncLambda = backend.freeagentSync.resources.lambda as NodejsFunction;
 const matcherLambda = backend.matcher.resources.lambda as NodejsFunction;
+const approveMatchLambda = backend.approveMatch.resources.lambda as NodejsFunction;
 const oauthTokenStoreLambda = backend.oauthTokenStore.resources.lambda as NodejsFunction;
 // New Step Functions Lambda functions
 const textractRequestLambda = backend.textractRequest.resources.lambda as NodejsFunction;
@@ -82,6 +85,7 @@ const gmailPollerRole = getLambdaRole(gmailPollerLambda, 'gmailPoller');
 const invoiceProcessorRole = getLambdaRole(invoiceProcessorLambda, 'invoiceProcessor');
 const freeagentSyncRole = getLambdaRole(freeagentSyncLambda, 'freeagentSync');
 const matcherRole = getLambdaRole(matcherLambda, 'matcher');
+const approveMatchRole = getLambdaRole(approveMatchLambda, 'approveMatch');
 const oauthTokenStoreRole = getLambdaRole(oauthTokenStoreLambda, 'oauthTokenStore');
 // New Step Functions Lambda roles
 const textractRequestRole = getLambdaRole(textractRequestLambda, 'textractRequest');
@@ -226,6 +230,17 @@ matcherLambda.addEnvironment('TRANSACTION_TABLE', commonEnvVars.TRANSACTION_TABL
 matcherLambda.addEnvironment('MATCH_TABLE', commonEnvVars.MATCH_TABLE);
 matcherLambda.addEnvironment('SETTINGS_TABLE', commonEnvVars.SETTINGS_TABLE);
 
+// Approve Match environment
+approveMatchLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
+approveMatchLambda.addEnvironment('TRANSACTION_TABLE', commonEnvVars.TRANSACTION_TABLE);
+approveMatchLambda.addEnvironment('MATCH_TABLE', commonEnvVars.MATCH_TABLE);
+approveMatchLambda.addEnvironment('OAUTH_TABLE', commonEnvVars.OAUTH_TABLE);
+approveMatchLambda.addEnvironment('STORAGE_BUCKET_NAME', commonEnvVars.STORAGE_BUCKET_NAME);
+// FreeAgent OAuth credentials from Amplify secrets
+backend.approveMatch.addEnvironment('FREEAGENT_CLIENT_ID', secret('FREEAGENT_CLIENT_ID'));
+backend.approveMatch.addEnvironment('FREEAGENT_CLIENT_SECRET', secret('FREEAGENT_CLIENT_SECRET'));
+backend.approveMatch.addEnvironment('FREEAGENT_USE_SANDBOX', secret('FREEAGENT_USE_SANDBOX'));
+
 // Textract Request environment (async processing with SNS)
 textractRequestLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
 textractRequestLambda.addEnvironment('STORAGE_BUCKET_NAME', storageBucketName);
@@ -275,6 +290,10 @@ attachSecretsManagerPermissions(backendStack, freeagentSyncRole, 'FreeAgentSync'
 
 // Matcher permissions (needs Bedrock for vendor name comparison)
 attachAIPermissions(backendStack, matcherRole, 'Matcher');
+
+// Approve Match permissions (S3 for PDF download, Secrets Manager for FreeAgent OAuth)
+attachSecretsManagerPermissions(backendStack, approveMatchRole, 'ApproveMatch');
+attachS3Permissions(backendStack, approveMatchRole, storageBucketArn, 'ApproveMatch');
 
 // OAuth Token Store permissions (Secrets Manager for storing OAuth tokens)
 attachSecretsManagerPermissions(backendStack, oauthTokenStoreRole, 'OAuthTokenStore');
@@ -366,6 +385,7 @@ gmailPollerLambda.addToRolePolicy(ddbPermissions);
 invoiceProcessorLambda.addToRolePolicy(ddbPermissions);
 freeagentSyncLambda.addToRolePolicy(ddbPermissions);
 matcherLambda.addToRolePolicy(ddbPermissions);
+approveMatchLambda.addToRolePolicy(ddbPermissions);
 // New Step Functions Lambdas
 textractRequestLambda.addToRolePolicy(ddbPermissions);
 textractRetrieveLambda.addToRolePolicy(ddbPermissions);
@@ -425,6 +445,11 @@ new CfnOutput(backendStack, 'FreeAgentSyncArn', {
 new CfnOutput(backendStack, 'MatcherArn', {
   value: matcherLambda.functionArn,
   description: 'Matcher Lambda ARN',
+});
+
+new CfnOutput(backendStack, 'ApproveMatchArn', {
+  value: approveMatchLambda.functionArn,
+  description: 'Approve Match Lambda ARN',
 });
 
 new CfnOutput(backendStack, 'StorageBucketName', {

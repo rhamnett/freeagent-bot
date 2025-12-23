@@ -368,6 +368,80 @@ export class FreeAgentClient {
       }),
     });
   }
+
+  /**
+   * Approve a "For Approval" bank transaction and attach a file
+   * This creates/updates the bank_transaction_explanation with the attachment
+   */
+  async approveTransactionWithAttachment(
+    bankTransactionUrl: string,
+    attachment: {
+      data: string; // base64 encoded file content
+      fileName: string;
+      contentType: 'application/x-pdf' | 'image/png' | 'image/jpeg' | 'image/gif';
+      description?: string;
+    }
+  ): Promise<void> {
+    // First, get the bank transaction to find its existing explanation
+    const transactionId = bankTransactionUrl.split('/').pop();
+
+    interface BankTransactionResponse {
+      bank_transaction: FreeAgentBankTransaction & {
+        bank_transaction_explanations?: Array<{
+          url: string;
+        }>;
+      };
+    }
+
+    const txResponse = await this.freeagentRequest<BankTransactionResponse>(
+      `/bank_transactions/${transactionId}`
+    );
+
+    const explanations = txResponse.bank_transaction.bank_transaction_explanations ?? [];
+
+    if (explanations.length > 0) {
+      // Update existing explanation with attachment and approve it
+      const explanationUrl = explanations[0].url;
+      const explanationId = explanationUrl.split('/').pop();
+
+      await this.freeagentRequest(`/bank_transaction_explanations/${explanationId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          bank_transaction_explanation: {
+            // Set marked_for_review to false to approve the transaction
+            marked_for_review: false,
+            attachment: {
+              data: attachment.data,
+              file_name: attachment.fileName,
+              content_type: attachment.contentType,
+              description: attachment.description ?? 'Invoice attachment',
+            },
+          },
+        }),
+      });
+
+      console.log(`Approved and attached to explanation ${explanationId}`);
+    } else {
+      // No existing explanation - this shouldn't happen for "For Approval" transactions
+      // but handle it by creating a new explanation
+      console.log('No existing explanation found, creating new one with attachment');
+
+      await this.freeagentRequest('/bank_transaction_explanations', {
+        method: 'POST',
+        body: JSON.stringify({
+          bank_transaction_explanation: {
+            bank_transaction: bankTransactionUrl,
+            attachment: {
+              data: attachment.data,
+              file_name: attachment.fileName,
+              content_type: attachment.contentType,
+              description: attachment.description ?? 'Invoice attachment',
+            },
+          },
+        }),
+      });
+    }
+  }
 }
 
 export type { FreeAgentBankTransaction, FreeAgentBill };
