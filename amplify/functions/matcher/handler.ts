@@ -91,7 +91,10 @@ export const handler: Handler<MatchEvent> = async (event) => {
       throw new Error(`Invoice not found: ${invoiceId}`);
     }
 
-    if (invoice.status !== 'EXTRACTED') {
+    // Allow matching for:
+    // - EXTRACTED: Initial matching after OCR/AI processing
+    // - PENDING: Re-matching when new transactions sync (invoice had no match before)
+    if (invoice.status !== 'EXTRACTED' && invoice.status !== 'PENDING') {
       console.log(`Invoice ${invoiceId} not ready for matching, status: ${invoice.status}`);
       return { skipped: true, status: invoice.status };
     }

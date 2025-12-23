@@ -116,13 +116,12 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
       try {
         console.log(`[${messageRef.id}] Checking if already processed...`);
 
-        // Check if we've already processed this message using Amplify
+        // Check if we've already processed this message
+        // Note: Don't use limit with filter - DynamoDB applies limit BEFORE filter on scans
         const { data: existingInvoices } = await dataClient.models.Invoice.list({
           filter: {
-            userId: { eq: userId },
             gmailMessageId: { eq: messageRef.id },
           },
-          limit: 1,
         });
 
         if (existingInvoices && existingInvoices.length > 0) {

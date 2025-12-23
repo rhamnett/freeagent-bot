@@ -6,6 +6,7 @@
 
 import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { Amplify } from 'aws-amplify';
 import { generateClient } from 'aws-amplify/data';
@@ -47,10 +48,13 @@ interface OAuthConnection {
 
 // DynamoDB client for OAuth reads only (doesn't need subscriptions)
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const lambdaClient = new LambdaClient({});
+
 const OAUTH_TABLE = process.env.OAUTH_TABLE ?? '';
 const FREEAGENT_CLIENT_ID = process.env.FREEAGENT_CLIENT_ID ?? '';
 const FREEAGENT_CLIENT_SECRET = process.env.FREEAGENT_CLIENT_SECRET ?? '';
 const USE_SANDBOX = process.env.FREEAGENT_USE_SANDBOX === 'true';
+const MATCHER_FUNCTION_NAME = process.env.MATCHER_FUNCTION_NAME ?? '';
 
 export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
   // Support both direct invocation and GraphQL mutation format
@@ -121,13 +125,12 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
 
     for (const tx of bankTransactions) {
       try {
-        // Check if transaction exists using Amplify Data client
+        // Check if transaction exists
+        // Note: Don't use limit with filter - DynamoDB applies limit BEFORE filter on scans
         const { data: existingList } = await dataClient.models.Transaction.list({
           filter: {
-            userId: { eq: userId },
             freeagentUrl: { eq: tx.url },
           },
-          limit: 1,
         });
 
         // All these transactions need matching (either For Approval or unexplained)
@@ -184,13 +187,12 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
         // Get contact name for the bill
         const contactName = await freeagentClient.getContactName(bill.contact);
 
-        // Check if bill exists using Amplify Data client
+        // Check if bill exists
+        // Note: Don't use limit with filter - DynamoDB applies limit BEFORE filter on scans
         const { data: existingList } = await dataClient.models.Transaction.list({
           filter: {
-            userId: { eq: userId },
             freeagentUrl: { eq: bill.url },
           },
-          limit: 1,
         });
 
         const transactionData = {
@@ -253,7 +255,57 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
       console.error('Error updating user settings:', error);
     }
 
-    console.log(`FreeAgent sync complete. Synced ${syncedCount} items.`);
+    // Re-match unmatched invoices from last 7 days against newly synced transactions
+    // This handles the case where invoice email arrived before the bank transaction
+    // Include both:
+    // - EXTRACTED: OCR complete but matcher never ran or no transactions existed
+    // - PENDING: Matcher ran but found no match
+    let rematchedCount = 0;
+    if (MATCHER_FUNCTION_NAME) {
+      try {
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        // Query unmatched invoices from last 7 days (EXTRACTED or PENDING)
+        const { data: unmatchedInvoices } = await dataClient.models.Invoice.list({
+          filter: {
+            and: [
+              { or: [{ status: { eq: 'PENDING' } }, { status: { eq: 'EXTRACTED' } }] },
+              { createdAt: { ge: sevenDaysAgo } },
+            ],
+          },
+        });
+
+        console.log(
+          `Found ${unmatchedInvoices?.length ?? 0} unmatched invoices from last 7 days to re-match`
+        );
+
+        for (const invoice of unmatchedInvoices ?? []) {
+          try {
+            // Invoke matcher Lambda asynchronously (don't wait for result)
+            await lambdaClient.send(
+              new InvokeCommand({
+                FunctionName: MATCHER_FUNCTION_NAME,
+                InvocationType: 'Event', // Async invocation
+                Payload: JSON.stringify({
+                  invoiceId: invoice.id,
+                  userId,
+                }),
+              })
+            );
+            rematchedCount++;
+            console.log(`Triggered re-match for invoice: ${invoice.id}`);
+          } catch (matchError) {
+            console.error(`Failed to trigger re-match for invoice ${invoice.id}:`, matchError);
+          }
+        }
+      } catch (error) {
+        console.error('Error re-matching pending invoices:', error);
+      }
+    }
+
+    console.log(
+      `FreeAgent sync complete. Synced ${syncedCount} items, triggered ${rematchedCount} re-matches.`
+    );
 
     return {
       success: true,

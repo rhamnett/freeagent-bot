@@ -15,7 +15,7 @@ interface SyncResult {
   error?: string;
 }
 
-export async function triggerGmailSync(userId: string, forceFullScan = true): Promise<SyncResult> {
+export async function triggerGmailSync(userId: string, forceFullScan = false): Promise<SyncResult> {
   return runWithAmplifyServerContext({
     nextServerContext: { cookies },
     operation: async () => {

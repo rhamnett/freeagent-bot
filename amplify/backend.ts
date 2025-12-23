@@ -219,6 +219,7 @@ invoiceProcessorLambda.addEnvironment('MATCHER_ARN', matcherLambda.functionArn);
 freeagentSyncLambda.addEnvironment('OAUTH_TABLE', commonEnvVars.OAUTH_TABLE);
 freeagentSyncLambda.addEnvironment('TRANSACTION_TABLE', commonEnvVars.TRANSACTION_TABLE);
 freeagentSyncLambda.addEnvironment('SETTINGS_TABLE', commonEnvVars.SETTINGS_TABLE);
+freeagentSyncLambda.addEnvironment('MATCHER_FUNCTION_NAME', matcherLambda.functionName);
 // FreeAgent OAuth credentials from Amplify secrets
 backend.freeagentSync.addEnvironment('FREEAGENT_CLIENT_ID', secret('FREEAGENT_CLIENT_ID'));
 backend.freeagentSync.addEnvironment('FREEAGENT_CLIENT_SECRET', secret('FREEAGENT_CLIENT_SECRET'));
@@ -235,7 +236,10 @@ backend.freeagentCategories.addEnvironment(
   'FREEAGENT_CLIENT_SECRET',
   secret('FREEAGENT_CLIENT_SECRET')
 );
-backend.freeagentCategories.addEnvironment('FREEAGENT_USE_SANDBOX', secret('FREEAGENT_USE_SANDBOX'));
+backend.freeagentCategories.addEnvironment(
+  'FREEAGENT_USE_SANDBOX',
+  secret('FREEAGENT_USE_SANDBOX')
+);
 
 // Matcher environment
 matcherLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
@@ -300,6 +304,13 @@ attachLambdaInvokePermissions(
 
 // FreeAgent Sync permissions
 attachSecretsManagerPermissions(backendStack, freeagentSyncRole, 'FreeAgentSync');
+// Permission to invoke matcher Lambda for re-matching pending invoices
+attachLambdaInvokePermissions(
+  backendStack,
+  freeagentSyncRole,
+  [matcherLambda.functionArn],
+  'FreeAgentSync'
+);
 
 // FreeAgent Categories permissions (Secrets Manager for OAuth tokens)
 attachSecretsManagerPermissions(backendStack, freeagentCategoriesRole, 'FreeAgentCategories');
