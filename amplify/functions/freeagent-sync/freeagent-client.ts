@@ -47,6 +47,17 @@ interface FreeAgentContact {
   last_name?: string;
 }
 
+interface FreeAgentCategory {
+  url: string;
+  description: string;
+  nominal_code: string;
+  allowable_for_tax?: boolean;
+  auto_sales_tax_rate?: string;
+  tax_reporting_name?: string;
+  // Added by our code to track the category group
+  category_group?: string;
+}
+
 interface BankTransactionsResponse {
   bank_transactions: FreeAgentBankTransaction[];
 }
@@ -335,6 +346,47 @@ export class FreeAgentClient {
   }
 
   /**
+   * Get expense categories for bank transaction explanations
+   * FreeAgent returns categories in 4 separate arrays by type
+   */
+  async getCategories(): Promise<FreeAgentCategory[]> {
+    interface RawCategory {
+      url: string;
+      description: string;
+      nominal_code: string;
+      allowable_for_tax?: boolean;
+      auto_sales_tax_rate?: string;
+      tax_reporting_name?: string;
+    }
+
+    interface CategoriesResponse {
+      admin_expenses_categories?: RawCategory[];
+      cost_of_sales_categories?: RawCategory[];
+      income_categories?: RawCategory[];
+      general_categories?: RawCategory[];
+    }
+
+    const response = await this.freeagentRequest<CategoriesResponse>('/categories');
+    console.log('Categories API response keys:', Object.keys(response));
+
+    // Combine expense-related categories (admin expenses + cost of sales)
+    const adminExpenses = (response.admin_expenses_categories ?? []).map((cat) => ({
+      ...cat,
+      category_group: 'Admin Expenses',
+    }));
+
+    const costOfSales = (response.cost_of_sales_categories ?? []).map((cat) => ({
+      ...cat,
+      category_group: 'Cost of Sales',
+    }));
+
+    const allExpenseCategories = [...adminExpenses, ...costOfSales];
+    console.log(`Found ${allExpenseCategories.length} expense categories`);
+
+    return allExpenseCategories;
+  }
+
+  /**
    * Create a bank transaction explanation (for auto-approval)
    */
   async createBankTransactionExplanation(
@@ -372,6 +424,7 @@ export class FreeAgentClient {
   /**
    * Approve a "For Approval" bank transaction and attach a file
    * This creates/updates the bank_transaction_explanation with the attachment
+   * @param categoryUrl - Optional category URL for unexplained transactions (required if no existing explanation)
    */
   async approveTransactionWithAttachment(
     bankTransactionUrl: string,
@@ -380,7 +433,8 @@ export class FreeAgentClient {
       fileName: string;
       contentType: 'application/x-pdf' | 'image/png' | 'image/jpeg' | 'image/gif';
       description?: string;
-    }
+    },
+    categoryUrl?: string
   ): Promise<void> {
     // First, get the bank transaction to find its existing explanation
     const transactionId = bankTransactionUrl.split('/').pop();
@@ -422,15 +476,29 @@ export class FreeAgentClient {
 
       console.log(`Approved and attached to explanation ${explanationId}`);
     } else {
-      // No existing explanation - this shouldn't happen for "For Approval" transactions
-      // but handle it by creating a new explanation
+      // No existing explanation - create a new one with attachment
+      // This happens for unexplained transactions (vs "For Approval" which have explanations)
       console.log('No existing explanation found, creating new one with attachment');
 
+      const grossValue = txResponse.bank_transaction.unexplained_amount;
+      console.log(
+        `Creating explanation: gross_value=${grossValue}, category=${categoryUrl ?? 'none'}`
+      );
+
+      if (!categoryUrl) {
+        throw new Error('categoryUrl is required for unexplained transactions');
+      }
+
+      // FreeAgent requires gross_value and category for new explanations
       await this.freeagentRequest('/bank_transaction_explanations', {
         method: 'POST',
         body: JSON.stringify({
           bank_transaction_explanation: {
             bank_transaction: bankTransactionUrl,
+            dated_on: txResponse.bank_transaction.dated_on,
+            gross_value: grossValue,
+            description: attachment.description ?? 'Invoice payment',
+            category: categoryUrl,
             attachment: {
               data: attachment.data,
               file_name: attachment.fileName,
@@ -444,4 +512,4 @@ export class FreeAgentClient {
   }
 }
 
-export type { FreeAgentBankTransaction, FreeAgentBill };
+export type { FreeAgentBankTransaction, FreeAgentBill, FreeAgentCategory };

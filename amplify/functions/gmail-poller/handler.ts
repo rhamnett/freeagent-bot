@@ -118,7 +118,10 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
 
         // Check if we've already processed this message using Amplify
         const { data: existingInvoices } = await dataClient.models.Invoice.list({
-          filter: { gmailMessageId: { eq: messageRef.id } },
+          filter: {
+            userId: { eq: userId },
+            gmailMessageId: { eq: messageRef.id },
+          },
           limit: 1,
         });
 
@@ -181,7 +184,6 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
           console.log(`[${messageRef.id}] S3 upload complete`);
 
           // Create invoice record using Amplify Data client (triggers subscriptions)
-          const now = new Date().toISOString();
           const { data: created, errors: createErrors } = await dataClient.models.Invoice.create({
             userId,
             gmailMessageId: messageRef.id,

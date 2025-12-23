@@ -100,11 +100,12 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
     console.log(`Found ${forApprovalTransactions.length} "For Approval" transactions`);
 
     console.log('Fetching unexplained transactions...');
-    const unexplainedTransactions = await freeagentClient.getUnexplainedBankTransactions(lastSyncDate);
+    const unexplainedTransactions =
+      await freeagentClient.getUnexplainedBankTransactions(lastSyncDate);
     console.log(`Found ${unexplainedTransactions.length} unexplained transactions`);
 
     // Combine and dedupe by URL
-    const allTransactionsMap = new Map<string, typeof forApprovalTransactions[0]>();
+    const allTransactionsMap = new Map<string, (typeof forApprovalTransactions)[0]>();
 
     for (const tx of forApprovalTransactions) {
       allTransactionsMap.set(tx.url, tx);
@@ -122,7 +123,10 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
       try {
         // Check if transaction exists using Amplify Data client
         const { data: existingList } = await dataClient.models.Transaction.list({
-          filter: { freeagentUrl: { eq: tx.url } },
+          filter: {
+            userId: { eq: userId },
+            freeagentUrl: { eq: tx.url },
+          },
           limit: 1,
         });
 
@@ -182,7 +186,10 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
 
         // Check if bill exists using Amplify Data client
         const { data: existingList } = await dataClient.models.Transaction.list({
-          filter: { freeagentUrl: { eq: bill.url } },
+          filter: {
+            userId: { eq: userId },
+            freeagentUrl: { eq: bill.url },
+          },
           limit: 1,
         });
 

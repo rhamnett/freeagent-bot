@@ -22,6 +22,7 @@ import { createInvoiceProcessorStateMachine } from './cdk/invoice-processor-sfn'
 import { data } from './data/resource';
 import { approveMatch } from './functions/approve-match/resource';
 import { bedrockEnhance } from './functions/bedrock-enhance/resource';
+import { freeagentCategories } from './functions/freeagent-categories/resource';
 import { freeagentSync } from './functions/freeagent-sync/resource';
 import { gmailPoller } from './functions/gmail-poller/resource';
 import { invoiceProcessor } from './functions/invoice-processor/resource';
@@ -41,6 +42,7 @@ const backend = defineBackend({
   gmailPoller,
   invoiceProcessor, // Keep for backward compatibility, will be deprecated
   freeagentSync,
+  freeagentCategories,
   matcher,
   approveMatch,
   oauthTokenStore,
@@ -61,6 +63,7 @@ const backendStack = backend.data.stack;
 const gmailPollerLambda = backend.gmailPoller.resources.lambda as NodejsFunction;
 const invoiceProcessorLambda = backend.invoiceProcessor.resources.lambda as NodejsFunction;
 const freeagentSyncLambda = backend.freeagentSync.resources.lambda as NodejsFunction;
+const freeagentCategoriesLambda = backend.freeagentCategories.resources.lambda as NodejsFunction;
 const matcherLambda = backend.matcher.resources.lambda as NodejsFunction;
 const approveMatchLambda = backend.approveMatch.resources.lambda as NodejsFunction;
 const oauthTokenStoreLambda = backend.oauthTokenStore.resources.lambda as NodejsFunction;
@@ -84,6 +87,7 @@ function getLambdaRole(lambda: NodejsFunction, name: string): iam.IRole {
 const gmailPollerRole = getLambdaRole(gmailPollerLambda, 'gmailPoller');
 const invoiceProcessorRole = getLambdaRole(invoiceProcessorLambda, 'invoiceProcessor');
 const freeagentSyncRole = getLambdaRole(freeagentSyncLambda, 'freeagentSync');
+const freeagentCategoriesRole = getLambdaRole(freeagentCategoriesLambda, 'freeagentCategories');
 const matcherRole = getLambdaRole(matcherLambda, 'matcher');
 const approveMatchRole = getLambdaRole(approveMatchLambda, 'approveMatch');
 const oauthTokenStoreRole = getLambdaRole(oauthTokenStoreLambda, 'oauthTokenStore');
@@ -224,6 +228,15 @@ freeagentSyncLambda.addEnvironment(
   process.env.FAKE_AWS_AS_UNEXPLAINED ?? 'true' // Fake AWS transactions as unexplained for testing
 );
 
+// FreeAgent Categories environment
+freeagentCategoriesLambda.addEnvironment('OAUTH_TABLE', commonEnvVars.OAUTH_TABLE);
+backend.freeagentCategories.addEnvironment('FREEAGENT_CLIENT_ID', secret('FREEAGENT_CLIENT_ID'));
+backend.freeagentCategories.addEnvironment(
+  'FREEAGENT_CLIENT_SECRET',
+  secret('FREEAGENT_CLIENT_SECRET')
+);
+backend.freeagentCategories.addEnvironment('FREEAGENT_USE_SANDBOX', secret('FREEAGENT_USE_SANDBOX'));
+
 // Matcher environment
 matcherLambda.addEnvironment('INVOICE_TABLE', commonEnvVars.INVOICE_TABLE);
 matcherLambda.addEnvironment('TRANSACTION_TABLE', commonEnvVars.TRANSACTION_TABLE);
@@ -287,6 +300,9 @@ attachLambdaInvokePermissions(
 
 // FreeAgent Sync permissions
 attachSecretsManagerPermissions(backendStack, freeagentSyncRole, 'FreeAgentSync');
+
+// FreeAgent Categories permissions (Secrets Manager for OAuth tokens)
+attachSecretsManagerPermissions(backendStack, freeagentCategoriesRole, 'FreeAgentCategories');
 
 // Matcher permissions (needs Bedrock for vendor name comparison)
 attachAIPermissions(backendStack, matcherRole, 'Matcher');
@@ -384,6 +400,7 @@ const ddbPermissions = new iam.PolicyStatement({
 gmailPollerLambda.addToRolePolicy(ddbPermissions);
 invoiceProcessorLambda.addToRolePolicy(ddbPermissions);
 freeagentSyncLambda.addToRolePolicy(ddbPermissions);
+freeagentCategoriesLambda.addToRolePolicy(ddbPermissions);
 matcherLambda.addToRolePolicy(ddbPermissions);
 approveMatchLambda.addToRolePolicy(ddbPermissions);
 // New Step Functions Lambdas

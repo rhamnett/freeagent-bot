@@ -24,10 +24,12 @@ const dataClient = generateClient<Schema>();
 interface ApproveMatchEvent {
   matchId?: string;
   userId?: string;
+  categoryUrl?: string;
   // AppSync wraps arguments in this object
   arguments?: {
     matchId: string;
     userId: string;
+    categoryUrl?: string;
   };
 }
 
@@ -83,12 +85,13 @@ export const handler: Handler<ApproveMatchEvent, ApproveMatchResult> = async (ev
   // Support both direct invocation and GraphQL mutation format
   const matchId = event.arguments?.matchId ?? event.matchId;
   const userId = event.arguments?.userId ?? event.userId;
+  const categoryUrl = event.arguments?.categoryUrl ?? event.categoryUrl;
 
   if (!matchId || !userId) {
     return { success: false, error: 'matchId and userId are required' };
   }
 
-  console.log(`Approving match: ${matchId} for user: ${userId}`);
+  console.log(`Approving match: ${matchId} for user: ${userId}, category: ${categoryUrl ?? 'default'}`);
 
   try {
     // Get match record
@@ -198,12 +201,16 @@ export const handler: Handler<ApproveMatchEvent, ApproveMatchResult> = async (ev
 
           // Upload attachment to FreeAgent
           console.log(`Uploading attachment to FreeAgent transaction: ${transaction.freeagentUrl}`);
-          await freeagentClient.approveTransactionWithAttachment(transaction.freeagentUrl, {
-            data: base64Data,
-            fileName,
-            contentType,
-            description: `Invoice from ${invoice.vendorName ?? 'vendor'}`,
-          });
+          await freeagentClient.approveTransactionWithAttachment(
+            transaction.freeagentUrl,
+            {
+              data: base64Data,
+              fileName,
+              contentType,
+              description: `Invoice from ${invoice.vendorName ?? 'vendor'}`,
+            },
+            categoryUrl
+          );
 
           attachmentUploaded = true;
           console.log('Attachment uploaded successfully');

@@ -13,9 +13,23 @@ interface ApproveMatchResult {
   error?: string;
 }
 
+interface CategoryItem {
+  url: string;
+  description: string;
+  nominalCode: string;
+  categoryGroup: string | null;
+}
+
+interface FetchCategoriesResult {
+  success: boolean;
+  categories?: CategoryItem[];
+  error?: string;
+}
+
 export async function approveMatchWithAttachment(
   matchId: string,
-  userId: string
+  userId: string,
+  categoryUrl?: string
 ): Promise<ApproveMatchResult> {
   return runWithAmplifyServerContext({
     nextServerContext: { cookies },
@@ -28,6 +42,7 @@ export async function approveMatchWithAttachment(
       const result = await client.mutations.approveMatchWithAttachment({
         matchId,
         userId,
+        categoryUrl,
       });
 
       if (result.errors) {
@@ -42,6 +57,43 @@ export async function approveMatchWithAttachment(
         success: result.data?.success ?? false,
         matchId: result.data?.matchId ?? undefined,
         attachmentUploaded: result.data?.attachmentUploaded ?? undefined,
+        error: result.data?.error ?? undefined,
+      };
+    },
+  });
+}
+
+export async function fetchFreeAgentCategories(
+  userId: string
+): Promise<FetchCategoriesResult> {
+  return runWithAmplifyServerContext({
+    nextServerContext: { cookies },
+    operation: async () => {
+      const client = generateServerClientUsingCookies<Schema>({
+        config: outputs,
+        cookies,
+      });
+
+      const result = await client.mutations.fetchFreeAgentCategories({
+        userId,
+      });
+
+      if (result.errors) {
+        console.error('fetchFreeAgentCategories errors:', result.errors);
+        return {
+          success: false,
+          error: result.errors[0]?.message ?? 'Unknown error',
+        };
+      }
+
+      return {
+        success: result.data?.success ?? false,
+        categories: result.data?.categories?.map((cat) => ({
+          url: cat?.url ?? '',
+          description: cat?.description ?? '',
+          nominalCode: cat?.nominalCode ?? '',
+          categoryGroup: cat?.categoryGroup ?? null,
+        })),
         error: result.data?.error ?? undefined,
       };
     },

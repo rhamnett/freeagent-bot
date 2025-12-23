@@ -5,6 +5,7 @@
 
 import { a, type ClientSchema, defineData } from '@aws-amplify/backend';
 import { approveMatch } from '../functions/approve-match/resource';
+import { freeagentCategories } from '../functions/freeagent-categories/resource';
 import { freeagentSync } from '../functions/freeagent-sync/resource';
 import { gmailPoller } from '../functions/gmail-poller/resource';
 import { oauthTokenStore } from '../functions/oauth-token-store/resource';
@@ -33,6 +34,17 @@ const schema = a
       success: a.boolean().required(),
       matchId: a.string(),
       attachmentUploaded: a.boolean(),
+      error: a.string(),
+    }),
+    CategoryItem: a.customType({
+      url: a.string().required(),
+      description: a.string().required(),
+      nominalCode: a.string().required(),
+      categoryGroup: a.string(),
+    }),
+    CategoriesResult: a.customType({
+      success: a.boolean().required(),
+      categories: a.ref('CategoryItem').array(),
       error: a.string(),
     }),
     // ============================================================================
@@ -230,6 +242,18 @@ const schema = a
       .handler(a.handler.function(freeagentSync)),
 
     // ============================================================================
+    // FreeAgent categories for expense categorization
+    // ============================================================================
+    fetchFreeAgentCategories: a
+      .mutation()
+      .arguments({
+        userId: a.string().required(),
+      })
+      .returns(a.ref('CategoriesResult'))
+      .authorization((allow) => [allow.authenticated()])
+      .handler(a.handler.function(freeagentCategories)),
+
+    // ============================================================================
     // Match approval with FreeAgent attachment
     // ============================================================================
     approveMatchWithAttachment: a
@@ -237,6 +261,7 @@ const schema = a
       .arguments({
         matchId: a.string().required(),
         userId: a.string().required(),
+        categoryUrl: a.string(), // Optional - required for unexplained transactions
       })
       .returns(a.ref('ApproveMatchResult'))
       .authorization((allow) => [allow.authenticated()])
@@ -246,6 +271,7 @@ const schema = a
     allow.resource(freeagentSync),
     allow.resource(gmailPoller),
     allow.resource(approveMatch),
+    allow.resource(freeagentCategories),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

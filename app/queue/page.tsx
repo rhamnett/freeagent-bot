@@ -6,10 +6,17 @@ import { CheckCircle, Paperclip, RefreshCw, Wifi, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { Schema } from '@/amplify/data/resource';
-import { approveMatchWithAttachment } from '@/app/actions/match-actions';
+import { approveMatchWithAttachment, fetchFreeAgentCategories } from '@/app/actions/match-actions';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { useRealtimePendingMatches } from '@/hooks/use-realtime-data';
 
@@ -39,14 +46,47 @@ interface MatchWithDetails {
   };
 }
 
+interface Category {
+  url: string;
+  description: string;
+  nominalCode: string;
+  categoryGroup: string | null;
+}
+
 export default function QueuePage() {
   const [matchDetails, setMatchDetails] = useState<Map<string, MatchWithDetails>>(new Map());
   const [selectedMatch, setSelectedMatch] = useState<MatchWithDetails | null>(null);
   const [processing, setProcessing] = useState<string | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
 
   // Real-time pending matches subscription
-  const { matches: pendingMatches, loading: realtimeLoading } = useRealtimePendingMatches();
+  const { matches: pendingMatches, loading: realtimeLoading, userId } = useRealtimePendingMatches();
+
+  // Fetch categories when user is authenticated
+  useEffect(() => {
+    async function loadCategories() {
+      if (!userId) return;
+
+      setCategoriesLoading(true);
+      try {
+        const result = await fetchFreeAgentCategories(userId);
+        if (result.success && result.categories) {
+          setCategories(result.categories);
+        } else {
+          console.error('Failed to load categories:', result.error);
+        }
+      } catch (error) {
+        console.error('Error loading categories:', error);
+      } finally {
+        setCategoriesLoading(false);
+      }
+    }
+
+    loadCategories();
+  }, [userId]);
 
   // Load details for matches when they change
   useEffect(() => {
@@ -148,7 +188,11 @@ export default function QueuePage() {
       }
 
       // Call server action to approve and attach invoice to FreeAgent
-      const result = await approveMatchWithAttachment(matchId, userId);
+      const result = await approveMatchWithAttachment(
+        matchId,
+        userId,
+        selectedCategory || undefined
+      );
 
       if (!result.success) {
         throw new Error(result.error ?? 'Failed to approve match');
@@ -171,6 +215,7 @@ export default function QueuePage() {
         return next;
       });
       setSelectedMatch(null);
+      setSelectedCategory('');
     } catch (error) {
       console.error('Error approving match:', error);
       toast.error('Failed to approve match', {
@@ -408,6 +453,43 @@ export default function QueuePage() {
                         </Badge>
                       ))}
                     </div>
+                  </div>
+
+                  <Separator />
+
+                  {/* Category Selection */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Expense Category</p>
+                    <Select
+                      value={selectedCategory}
+                      onValueChange={setSelectedCategory}
+                      disabled={categoriesLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            categoriesLoading
+                              ? 'Loading categories...'
+                              : 'Select category (optional)'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categories.map((cat) => (
+                          <SelectItem key={cat.url} value={cat.url}>
+                            {cat.description}
+                            {cat.nominalCode && (
+                              <span className="text-muted-foreground ml-2">
+                                ({cat.nominalCode})
+                              </span>
+                            )}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Required for unexplained transactions
+                    </p>
                   </div>
 
                   <Separator />
