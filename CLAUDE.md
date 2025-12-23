@@ -497,7 +497,6 @@ function-name/
 
 ## Testing Notes
 
-- `FAKE_AWS_AS_UNEXPLAINED=true` fakes AWS transactions as unexplained for testing
 - EventBridge schedules disabled by default (enable after OAuth setup)
 - Use manual sync buttons in Settings page for testing
 - Clear All Data button resets poll timestamps for fresh testing

@@ -224,10 +224,6 @@ freeagentSyncLambda.addEnvironment('MATCHER_FUNCTION_NAME', matcherLambda.functi
 backend.freeagentSync.addEnvironment('FREEAGENT_CLIENT_ID', secret('FREEAGENT_CLIENT_ID'));
 backend.freeagentSync.addEnvironment('FREEAGENT_CLIENT_SECRET', secret('FREEAGENT_CLIENT_SECRET'));
 backend.freeagentSync.addEnvironment('FREEAGENT_USE_SANDBOX', secret('FREEAGENT_USE_SANDBOX'));
-freeagentSyncLambda.addEnvironment(
-  'FAKE_AWS_AS_UNEXPLAINED',
-  process.env.FAKE_AWS_AS_UNEXPLAINED ?? 'true' // Fake AWS transactions as unexplained for testing
-);
 
 // FreeAgent Categories environment
 freeagentCategoriesLambda.addEnvironment('OAUTH_TABLE', commonEnvVars.OAUTH_TABLE);
