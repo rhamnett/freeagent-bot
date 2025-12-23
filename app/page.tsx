@@ -1,18 +1,40 @@
-"use client";
+'use client';
 
-import { fetchAuthSession } from "aws-amplify/auth";
-import { generateClient } from "aws-amplify/data";
-import { useEffect, useState } from "react";
-import type { Schema } from "@/amplify/data/resource";
-import Link from "next/link";
-import { clearAllData, triggerFreeAgentSync, triggerFullSync } from "./actions/sync-actions";
-import { AmplifyAuthenticator } from "@/components/auth/amplify-authenticator";
-import { Navbar } from "@/components/layout/navbar";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, CheckCircle2, FileText, Link2, RefreshCw, Trash2, TrendingUp } from "lucide-react";
+import { generateClient } from 'aws-amplify/data';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Database,
+  ExternalLink,
+  FileText,
+  Link2,
+  RefreshCw,
+  Trash2,
+  TrendingUp,
+  Wifi,
+} from 'lucide-react';
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import type { Schema } from '@/amplify/data/resource';
+import { AmplifyAuthenticator } from '@/components/auth/amplify-authenticator';
+import { Navbar } from '@/components/layout/navbar';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
+import { useRealtimeData } from '@/hooks/use-realtime-data';
+import { clearAllData, triggerFreeAgentSync, triggerFullSync } from './actions/sync-actions';
+
+type Invoice = Schema['Invoice']['type'];
 
 const client = generateClient<Schema>();
 
@@ -22,151 +44,161 @@ interface DashboardStats {
   processedToday: number;
   gmailConnected: boolean;
   freeagentConnected: boolean;
+  totalTransactions: number;
+  totalBills: number;
 }
 
 interface RecentActivity {
   id: string;
-  type: "invoice" | "match" | "approval";
+  type: 'invoice' | 'match' | 'approval';
   description: string;
   timestamp: string;
 }
 
 function Dashboard({ signOut }: { signOut: () => void }) {
-  const [stats, setStats] = useState<DashboardStats>({
-    pendingReview: 0,
-    autoApproved: 0,
-    processedToday: 0,
-    gmailConnected: false,
-    freeagentConnected: false,
-  });
-  const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [freeagentConnected, setFreeagentConnected] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncingFreeAgent, setSyncingFreeAgent] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
-
-  async function loadDashboardData() {
-    try {
-      const session = await fetchAuthSession();
-      const userId = session.tokens?.idToken?.payload.sub as string;
-
-      // Check OAuth connections
-      const gmailConnection = await client.models.OAuthConnection.get({
-        id: `${userId}#GMAIL`,
-      });
-      const freeagentConnection = await client.models.OAuthConnection.get({
-        id: `${userId}#FREEAGENT`,
-      });
-
-      // Get pending matches
-      const pendingMatches = await client.models.Match.list({
-        filter: {
-          userId: { eq: userId },
-          status: { eq: "PENDING" },
-        },
-      });
-
-      // Get auto-approved matches (last 7 days)
-      const weekAgo = new Date(
-        Date.now() - 7 * 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const autoApprovedMatches = await client.models.Match.list({
-        filter: {
-          userId: { eq: userId },
-          status: { eq: "AUTO_APPROVED" },
-          createdAt: { ge: weekAgo },
-        },
-      });
-
-      // Get invoices processed today
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const processedToday = await client.models.Invoice.list({
-        filter: {
-          userId: { eq: userId },
-          createdAt: { ge: todayStart.toISOString() },
-        },
-      });
-
-      setStats({
-        pendingReview: pendingMatches.data?.length ?? 0,
-        autoApproved: autoApprovedMatches.data?.length ?? 0,
-        processedToday: processedToday.data?.length ?? 0,
-        gmailConnected: !!gmailConnection.data,
-        freeagentConnected: !!freeagentConnection.data,
-      });
-
-      // Build recent activity
-      const activities: RecentActivity[] = [];
-
-      // Add recent invoices
-      const recentInvoices = await client.models.Invoice.list({
-        filter: { userId: { eq: userId } },
-        limit: 5,
-      });
-
-      for (const invoice of recentInvoices.data ?? []) {
-        activities.push({
-          id: invoice.id,
-          type: "invoice",
-          description: `Invoice from ${invoice.vendorName ?? "Unknown"} - ${invoice.status}`,
-          timestamp: invoice.createdAt ?? "",
+  // Real-time data subscriptions
+  const {
+    invoices,
+    matches,
+    pendingMatches,
+    transactions,
+    loading: realtimeLoading,
+    userId,
+  } = useRealtimeData({
+    enableInvoices: true,
+    enableMatches: true,
+    enableTransactions: true,
+    onInvoiceChange: useCallback((invoice, type) => {
+      if (type === 'create') {
+        toast.success('New invoice received', {
+          description: `From ${invoice.vendorName ?? 'Unknown vendor'}`,
+        });
+      } else if (type === 'update' && invoice.status === 'EXTRACTED') {
+        toast.info('Invoice processed', {
+          description: `${invoice.vendorName ?? 'Invoice'} - ${invoice.totalAmount ? `£${invoice.totalAmount.toFixed(2)}` : 'Amount pending'}`,
         });
       }
+    }, []),
+    onMatchChange: useCallback((match, type) => {
+      if (type === 'create') {
+        const confidence = Math.round((match.confidenceScore ?? 0) * 100);
+        if (match.status === 'AUTO_APPROVED') {
+          toast.success('Match auto-approved', {
+            description: `Confidence: ${confidence}%`,
+          });
+        } else if (match.status === 'PENDING') {
+          toast.info('New match for review', {
+            description: `Confidence: ${confidence}%`,
+          });
+        }
+      }
+    }, []),
+    onTransactionChange: useCallback((transaction, type) => {
+      if (type === 'create') {
+        toast.info('New transaction synced', {
+          description: `${transaction.type === 'BILL' ? 'Bill' : 'Transaction'}: £${transaction.amount.toFixed(2)}`,
+        });
+      }
+    }, []),
+  });
 
-      // Sort by timestamp and take top 5
-      activities.sort(
-        (a, b) =>
-          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-      );
-      setRecentActivity(activities.slice(0, 5));
-    } catch (error) {
-      console.error("Error loading dashboard:", error);
-    } finally {
-      setLoading(false);
+  // Calculate stats from real-time data
+  const stats = useMemo<DashboardStats>(() => {
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const autoApproved = matches.filter(
+      (m) => m.status === 'AUTO_APPROVED' && new Date(m.createdAt ?? 0) >= weekAgo
+    ).length;
+
+    const processedToday = invoices.filter(
+      (inv) => new Date(inv.createdAt ?? 0) >= todayStart
+    ).length;
+
+    const bankTransactionCount = transactions.filter((t) => t.type === 'BANK_TRANSACTION').length;
+    const billCount = transactions.filter((t) => t.type === 'BILL').length;
+
+    return {
+      pendingReview: pendingMatches.length,
+      autoApproved,
+      processedToday,
+      gmailConnected,
+      freeagentConnected,
+      totalTransactions: bankTransactionCount,
+      totalBills: billCount,
+    };
+  }, [invoices, matches, pendingMatches, transactions, gmailConnected, freeagentConnected]);
+
+  // Build recent activity from real-time invoices
+  const recentActivity = useMemo<RecentActivity[]>(() => {
+    return invoices
+      .map((invoice) => ({
+        id: invoice.id,
+        type: 'invoice' as const,
+        description: `Invoice from ${invoice.vendorName ?? 'Unknown'} - ${invoice.status}`,
+        timestamp: invoice.createdAt ?? '',
+      }))
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 5);
+  }, [invoices]);
+
+  // Load OAuth connections (not real-time, just on mount)
+  useEffect(() => {
+    async function loadConnections() {
+      if (!userId) return;
+      try {
+        const [gmailConnection, freeagentConnection] = await Promise.all([
+          client.models.OAuthConnection.get({ id: `${userId}#GMAIL` }),
+          client.models.OAuthConnection.get({ id: `${userId}#FREEAGENT` }),
+        ]);
+        setGmailConnected(!!gmailConnection.data);
+        setFreeagentConnected(!!freeagentConnection.data);
+      } catch (error) {
+        console.error('Error loading connections:', error);
+      } finally {
+        setConnectionsLoading(false);
+      }
     }
-  }
+    loadConnections();
+  }, [userId]);
+
+  const loading = realtimeLoading || connectionsLoading;
 
   async function handleClearData() {
-    if (clearing) return;
+    if (clearing || !userId) return;
 
     const confirmed = window.confirm(
-      "Are you sure you want to clear ALL invoices, transactions, and matches? This cannot be undone.",
+      'Are you sure you want to clear ALL invoices, transactions, and matches? This cannot be undone.'
     );
     if (!confirmed) return;
 
     try {
       setClearing(true);
-      setSyncStatus("Clearing all data...");
-
-      const session = await fetchAuthSession();
-      const userId = session.tokens?.idToken?.payload.sub as string;
-
-      if (!userId) {
-        setSyncStatus("Error: Not authenticated");
-        return;
-      }
+      setSyncStatus('Clearing all data...');
 
       const result = await clearAllData(userId);
 
       if (result.success) {
         setSyncStatus(
-          `Cleared: ${result.deleted.invoices} invoices, ${result.deleted.transactions} transactions, ${result.deleted.matches} matches`,
+          `Cleared: ${result.deleted.invoices} invoices, ${result.deleted.transactions} transactions, ${result.deleted.matches} matches`
         );
-        await loadDashboardData();
+        // Real-time subscriptions will automatically update the UI
       } else {
         setSyncStatus(`Error: ${result.error}`);
       }
     } catch (error) {
-      console.error("Clear data error:", error);
-      setSyncStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      console.error('Clear data error:', error);
+      setSyncStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setClearing(false);
       setTimeout(() => setSyncStatus(null), 10000);
@@ -174,21 +206,12 @@ function Dashboard({ signOut }: { signOut: () => void }) {
   }
 
   async function triggerManualSync() {
-    if (syncing) return;
+    if (syncing || !userId) return;
 
     try {
       setSyncing(true);
-      setSyncStatus("Starting sync...");
+      setSyncStatus('Syncing Gmail and FreeAgent...');
 
-      const session = await fetchAuthSession();
-      const userId = session.tokens?.idToken?.payload.sub as string;
-
-      if (!userId) {
-        setSyncStatus("Error: Not authenticated");
-        return;
-      }
-
-      setSyncStatus("Syncing Gmail and FreeAgent...");
       const result = await triggerFullSync(userId);
 
       const gmailMsg = result.gmail.success
@@ -199,13 +222,10 @@ function Dashboard({ signOut }: { signOut: () => void }) {
         : `FreeAgent: ${result.freeagent.error}`;
 
       setSyncStatus(`${gmailMsg} | ${faMsg}`);
-
-      await loadDashboardData();
+      // Real-time subscriptions will automatically update the UI
     } catch (error) {
-      console.error("Sync error:", error);
-      setSyncStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      console.error('Sync error:', error);
+      setSyncStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setSyncing(false);
       setTimeout(() => setSyncStatus(null), 10000);
@@ -213,39 +233,34 @@ function Dashboard({ signOut }: { signOut: () => void }) {
   }
 
   async function handleFreeAgentSync() {
-    if (syncingFreeAgent) return;
+    if (syncingFreeAgent || !userId) return;
 
     try {
       setSyncingFreeAgent(true);
-      setSyncStatus("Syncing FreeAgent transactions...");
-
-      const session = await fetchAuthSession();
-      const userId = session.tokens?.idToken?.payload.sub as string;
-
-      if (!userId) {
-        setSyncStatus("Error: Not authenticated");
-        return;
-      }
+      const syncToast = toast.loading('Syncing FreeAgent transactions...');
 
       const result = await triggerFreeAgentSync(userId);
 
       if (result.success) {
-        setSyncStatus(
-          `FreeAgent: ${result.processed ?? 0} items synced (${result.bankTransactions ?? 0} transactions, ${result.bills ?? 0} bills)`,
-        );
+        const totalSynced = (result.bankTransactions ?? 0) + (result.bills ?? 0);
+        toast.success(`Synced ${totalSynced} items from FreeAgent`, {
+          id: syncToast,
+          description: `${result.bankTransactions ?? 0} bank transactions, ${result.bills ?? 0} bills`,
+        });
       } else {
-        setSyncStatus(`FreeAgent sync failed: ${result.error}`);
+        toast.error('FreeAgent sync failed', {
+          id: syncToast,
+          description: result.error,
+        });
       }
-
-      await loadDashboardData();
+      // Real-time subscriptions will automatically update the UI
     } catch (error) {
-      console.error("FreeAgent sync error:", error);
-      setSyncStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      console.error('FreeAgent sync error:', error);
+      toast.error('Sync failed', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setSyncingFreeAgent(false);
-      setTimeout(() => setSyncStatus(null), 10000);
     }
   }
 
@@ -265,15 +280,19 @@ function Dashboard({ signOut }: { signOut: () => void }) {
   return (
     <div className="min-h-screen bg-background">
       <Navbar signOut={signOut} />
-      
+
       <main className="container mx-auto p-8 space-y-8">
         {/* Header */}
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-4xl font-bold tracking-tight">Dashboard</h1>
-            <p className="text-muted-foreground mt-2">
-              AI-powered invoice matching for FreeAgent
-            </p>
+            <div className="flex items-center gap-3">
+              <h1 className="text-4xl font-bold tracking-tight">Dashboard</h1>
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-600 rounded-full text-xs font-medium">
+                <Wifi className="h-3 w-3" />
+                <span>Live</span>
+              </div>
+            </div>
+            <p className="text-muted-foreground mt-2">AI-powered invoice matching for FreeAgent</p>
           </div>
           <div className="flex gap-3">
             <Button
@@ -346,11 +365,10 @@ function Dashboard({ signOut }: { signOut: () => void }) {
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
               {!stats.gmailConnected && !stats.freeagentConnected
-                ? "Connect Gmail and FreeAgent to start matching invoices."
+                ? 'Connect Gmail and FreeAgent to start matching invoices.'
                 : !stats.gmailConnected
-                  ? "Connect Gmail to scan for invoices."
-                  : "Connect FreeAgent to match transactions."}
-              {" "}
+                  ? 'Connect Gmail to scan for invoices.'
+                  : 'Connect FreeAgent to match transactions.'}{' '}
               <Link href="/settings" className="font-medium underline underline-offset-4">
                 Go to Settings
               </Link>
@@ -359,12 +377,10 @@ function Dashboard({ signOut }: { signOut: () => void }) {
         )}
 
         {/* Stats Grid */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Pending Review
-              </CardTitle>
+              <CardTitle className="text-sm font-medium">Pending Review</CardTitle>
               <FileText className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -379,9 +395,7 @@ function Dashboard({ signOut }: { signOut: () => void }) {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Auto-Approved
-              </CardTitle>
+              <CardTitle className="text-sm font-medium">Auto-Approved</CardTitle>
               <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -392,9 +406,7 @@ function Dashboard({ signOut }: { signOut: () => void }) {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Processed Today
-              </CardTitle>
+              <CardTitle className="text-sm font-medium">Processed Today</CardTitle>
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -405,19 +417,34 @@ function Dashboard({ signOut }: { signOut: () => void }) {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Connections
-              </CardTitle>
+              <CardTitle className="text-sm font-medium">FreeAgent Data</CardTitle>
+              <Database className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.totalTransactions + stats.totalBills}</div>
+              <p className="text-xs text-muted-foreground">
+                {stats.totalTransactions} transactions, {stats.totalBills} bills
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Connections</CardTitle>
               <Link2 className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <div className={`h-2 w-2 rounded-full ${stats.gmailConnected ? 'bg-green-500' : 'bg-gray-300'}`} />
+                  <div
+                    className={`h-2 w-2 rounded-full ${stats.gmailConnected ? 'bg-green-500' : 'bg-gray-300'}`}
+                  />
                   <span className="text-sm">Gmail</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className={`h-2 w-2 rounded-full ${stats.freeagentConnected ? 'bg-green-500' : 'bg-gray-300'}`} />
+                  <div
+                    className={`h-2 w-2 rounded-full ${stats.freeagentConnected ? 'bg-green-500' : 'bg-gray-300'}`}
+                  />
                   <span className="text-sm">FreeAgent</span>
                 </div>
               </div>
@@ -433,38 +460,50 @@ function Dashboard({ signOut }: { signOut: () => void }) {
           </CardHeader>
           <CardContent>
             {recentActivity.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                No recent activity
-              </div>
+              <div className="text-center py-8 text-muted-foreground">No recent activity</div>
             ) : (
               <div className="space-y-4">
-                {recentActivity.map((activity) => (
-                  <div
-                    key={activity.id}
-                    className="flex items-center justify-between border-b pb-4 last:border-0 last:pb-0"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="text-2xl">
-                        {activity.type === "invoice"
-                          ? "📄"
-                          : activity.type === "match"
-                            ? "🔗"
-                            : "✓"}
+                {recentActivity.map((activity) => {
+                  const invoice = invoices.find((inv) => inv.id === activity.id);
+                  return (
+                    <button
+                      type="button"
+                      key={activity.id}
+                      onClick={() => invoice && setSelectedInvoice(invoice)}
+                      className="flex items-center justify-between border-b pb-4 last:border-0 last:pb-0 w-full text-left hover:bg-muted/50 rounded-lg p-2 -mx-2 transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="text-2xl">
+                          {activity.type === 'invoice'
+                            ? '📄'
+                            : activity.type === 'match'
+                              ? '🔗'
+                              : '✓'}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{activity.description}</p>
+                          {invoice?.totalAmount && (
+                            <p className="text-xs text-muted-foreground">
+                              {invoice.currency ?? '£'}
+                              {invoice.totalAmount.toFixed(2)}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-sm font-medium">{activity.description}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(activity.timestamp).toLocaleString('en-GB', {
+                            day: 'numeric',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
                       </div>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(activity.timestamp).toLocaleString("en-GB", {
-                        day: "numeric",
-                        month: "short",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </span>
-                  </div>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -476,9 +515,7 @@ function Dashboard({ signOut }: { signOut: () => void }) {
             <Card className="hover:border-primary transition-colors cursor-pointer">
               <CardHeader>
                 <CardTitle className="text-lg">Review Queue</CardTitle>
-                <CardDescription>
-                  Review and approve pending invoice matches
-                </CardDescription>
+                <CardDescription>Review and approve pending invoice matches</CardDescription>
               </CardHeader>
             </Card>
           </Link>
@@ -486,22 +523,128 @@ function Dashboard({ signOut }: { signOut: () => void }) {
             <Card className="hover:border-primary transition-colors cursor-pointer">
               <CardHeader>
                 <CardTitle className="text-lg">Settings</CardTitle>
-                <CardDescription>
-                  Manage your Gmail and FreeAgent connections
-                </CardDescription>
+                <CardDescription>Manage your Gmail and FreeAgent connections</CardDescription>
               </CardHeader>
             </Card>
           </Link>
         </div>
       </main>
+
+      {/* Invoice Detail Dialog */}
+      <Dialog open={!!selectedInvoice} onOpenChange={(open) => !open && setSelectedInvoice(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Invoice Details
+            </DialogTitle>
+            <DialogDescription>{selectedInvoice?.vendorName ?? 'Unknown Vendor'}</DialogDescription>
+          </DialogHeader>
+
+          {selectedInvoice && (
+            <div className="space-y-6">
+              {/* Status Badge */}
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={
+                    selectedInvoice.status === 'MATCHED'
+                      ? 'default'
+                      : selectedInvoice.status === 'EXTRACTED'
+                        ? 'secondary'
+                        : selectedInvoice.status === 'FAILED'
+                          ? 'destructive'
+                          : 'outline'
+                  }
+                >
+                  {selectedInvoice.status ?? 'PENDING'}
+                </Badge>
+                {selectedInvoice.extractionConfidence && (
+                  <span className="text-xs text-muted-foreground">
+                    {Math.round(selectedInvoice.extractionConfidence * 100)}% confidence
+                  </span>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Invoice Information */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Invoice Number</p>
+                  <p className="font-medium">{selectedInvoice.invoiceNumber ?? 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Total Amount</p>
+                  <p className="font-medium text-lg">
+                    {selectedInvoice.currency ?? '£'}
+                    {selectedInvoice.totalAmount?.toFixed(2) ?? 'N/A'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Invoice Date</p>
+                  <p className="font-medium">
+                    {selectedInvoice.invoiceDate
+                      ? new Date(selectedInvoice.invoiceDate).toLocaleDateString('en-GB')
+                      : 'N/A'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Due Date</p>
+                  <p className="font-medium">
+                    {selectedInvoice.dueDate
+                      ? new Date(selectedInvoice.dueDate).toLocaleDateString('en-GB')
+                      : 'N/A'}
+                  </p>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Email Information */}
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">Source Email</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-medium">{selectedInvoice.senderEmail ?? 'Unknown sender'}</p>
+                </div>
+                {selectedInvoice.receivedAt && (
+                  <p className="text-xs text-muted-foreground">
+                    Received: {new Date(selectedInvoice.receivedAt).toLocaleString('en-GB')}
+                  </p>
+                )}
+              </div>
+
+              {/* Line Items (if available) */}
+              {selectedInvoice.lineItems && (
+                <>
+                  <Separator />
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Line Items</p>
+                    <div className="bg-muted/50 rounded-lg p-3 text-xs font-mono overflow-auto max-h-40">
+                      <pre>{JSON.stringify(selectedInvoice.lineItems, null, 2)}</pre>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Processing Info */}
+              <Separator />
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p>ID: {selectedInvoice.id}</p>
+                {selectedInvoice.processingStep && (
+                  <p>Processing Step: {selectedInvoice.processingStep}</p>
+                )}
+                {selectedInvoice.s3Key && <p>S3 Key: {selectedInvoice.s3Key}</p>}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 export default function App() {
   return (
-    <AmplifyAuthenticator>
-      {(signOut) => <Dashboard signOut={signOut} />}
-    </AmplifyAuthenticator>
+    <AmplifyAuthenticator>{(signOut) => <Dashboard signOut={signOut} />}</AmplifyAuthenticator>
   );
 }

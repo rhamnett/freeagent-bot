@@ -1,21 +1,29 @@
 /**
  * @file amplify/functions/gmail-poller/handler.ts
  * @description Lambda handler for polling Gmail for invoice attachments
+ * Uses Amplify Data client to trigger real-time subscriptions
  */
 
 import { createHash } from 'node:crypto';
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  UpdateCommand,
-} from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
 import type { Handler } from 'aws-lambda';
+import { env } from '$amplify/env/gmail-poller';
+import type { Schema } from '../../data/resource';
 import { GmailClient } from './gmail-client';
+
+// Configure Amplify for Lambda environment
+const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
+Amplify.configure(resourceConfig, libraryOptions);
+console.log('Amplify configured');
+
+export const dataClient = generateClient<Schema>();
+console.log('Generated Amplify Data client');
 
 interface PollEvent {
   userId?: string;
@@ -41,36 +49,14 @@ interface OAuthConnection {
   email?: string;
 }
 
-interface UserSettings {
-  userId: string;
-  lastGmailPollAt?: string;
-}
-
-interface Invoice {
-  id: string;
-  userId: string;
-  gmailMessageId: string;
-  attachmentId: string;
-  s3Key: string;
-  senderEmail?: string;
-  receivedAt: string;
-  status: string;
-  processingStep: string;
-  stepFunctionExecutionArn?: string;
-  createdAt: string;
-  updatedAt: string;
-  owner: string;
-}
-
 const s3Client = new S3Client({});
 const sfnClient = new SFNClient({});
+// Keep DynamoDB client for OAuth reads only
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const BUCKET_NAME = process.env.STORAGE_BUCKET_NAME ?? '';
 const INVOICE_STATE_MACHINE_ARN = process.env.INVOICE_STATE_MACHINE_ARN ?? '';
 const OAUTH_TABLE = process.env.OAUTH_TABLE ?? '';
-const INVOICE_TABLE = process.env.INVOICE_TABLE ?? '';
-const SETTINGS_TABLE = process.env.SETTINGS_TABLE ?? '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? '';
 
@@ -83,7 +69,7 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
     return { success: false, error: 'userId is required' };
   }
 
-  console.log(`Starting Gmail poll for user: ${userId}`);
+  console.log(`Starting Gmail poll for user: ${userId}, forceFullScan: ${forceFullScan}`);
 
   try {
     // Get OAuth connection for Gmail (id format: "{userId}#GMAIL")
@@ -100,64 +86,43 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
       return { success: false, processed: 0, error: 'No Gmail connection' };
     }
 
-    // Get user settings for last poll time
-    const settingsResponse = await ddbClient.send(
-      new GetCommand({
-        TableName: SETTINGS_TABLE,
-        Key: { userId },
-      })
-    );
-
-    const settings = settingsResponse.Item as UserSettings | undefined;
-    console.log('User settings:', JSON.stringify(settings));
-    console.log('Force full scan:', forceFullScan);
-
-    // Determine the start date for scanning:
-    // - On first run (no lastGmailPollAt) or forceFullScan: go back 30 days
-    // - On subsequent runs: use lastGmailPollAt
-    let lastPollDate: Date;
-    if (forceFullScan || !settings?.lastGmailPollAt) {
-      // First run or forced: scan last 30 days
-      lastPollDate = new Date();
-      lastPollDate.setDate(lastPollDate.getDate() - 30);
-      console.log('First run or forced scan: going back 30 days');
-    } else {
-      // Subsequent run: use last poll time
-      lastPollDate = new Date(settings.lastGmailPollAt);
-      console.log('Incremental sync from last poll date');
-    }
-
-    console.log(`Querying Gmail for messages since: ${lastPollDate.toISOString()}`);
-
     // Initialize Gmail client
     const gmailClient = new GmailClient(oauth.secretArn, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 
-    // List messages with attachments since lastPollDate (no end date - scan up to now)
-    const messages = await gmailClient.listMessagesWithAttachments(lastPollDate, 50);
+    // Get user settings for last poll time using Amplify
+    const { data: settings } = await dataClient.models.UserSettings.get({ userId });
 
+    // Determine date range for fetching messages
+    let lastPollDate: Date;
+    if (forceFullScan || !settings?.lastGmailPollAt) {
+      // First run or force scan: go back 30 days
+      lastPollDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      console.log('Scanning last 30 days (force scan or first run)');
+    } else {
+      lastPollDate = new Date(settings.lastGmailPollAt);
+      console.log(`Scanning since last poll: ${lastPollDate.toISOString()}`);
+    }
+
+    // List messages with attachments since last poll
+    console.log('Fetching messages with attachments from Gmail...');
+    const messages = await gmailClient.listMessagesWithAttachments(lastPollDate);
     console.log(`Found ${messages.length} messages with attachments`);
 
     let processedCount = 0;
     const invoicesToProcess: Map<string, string> = new Map(); // invoiceId -> s3Key
 
+    // Process regular attachment emails
     for (const messageRef of messages) {
       try {
         console.log(`[${messageRef.id}] Checking if already processed...`);
 
-        // Check if we've already processed this message
-        const existingInvoice = await ddbClient.send(
-          new QueryCommand({
-            TableName: INVOICE_TABLE,
-            IndexName: 'byGmailMessageId',
-            KeyConditionExpression: 'gmailMessageId = :msgId',
-            ExpressionAttributeValues: {
-              ':msgId': messageRef.id,
-            },
-            Limit: 1,
-          })
-        );
+        // Check if we've already processed this message using Amplify
+        const { data: existingInvoices } = await dataClient.models.Invoice.list({
+          filter: { gmailMessageId: { eq: messageRef.id } },
+          limit: 1,
+        });
 
-        if (existingInvoice.Items && existingInvoice.Items.length > 0) {
+        if (existingInvoices && existingInvoices.length > 0) {
           console.log(`[${messageRef.id}] Skipping already processed message`);
           continue;
         }
@@ -187,9 +152,8 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
           const s3Key = `invoices/${userId}/${timestamp}-${safeFilename}`;
 
           console.log(`[${messageRef.id}] Uploading to S3: ${s3Key}`);
-          
+
           // Determine correct ContentType from filename extension
-          // Gmail sometimes reports PDFs as application/octet-stream, so use filename
           let contentType = attachment.mimeType;
           const lowerFilename = attachment.filename.toLowerCase();
           if (lowerFilename.endsWith('.pdf')) {
@@ -199,7 +163,7 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
           } else if (lowerFilename.endsWith('.jpg') || lowerFilename.endsWith('.jpeg')) {
             contentType = 'image/jpeg';
           }
-          
+
           // Upload to S3
           await s3Client.send(
             new PutObjectCommand({
@@ -216,37 +180,33 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
           );
           console.log(`[${messageRef.id}] S3 upload complete`);
 
-          // Create invoice record
-          const invoiceId = `${userId}-${timestamp}-${attachment.attachmentId.slice(0, 8)}`;
+          // Create invoice record using Amplify Data client (triggers subscriptions)
           const now = new Date().toISOString();
-
-          const invoice: Invoice = {
-            id: invoiceId,
+          const { data: created, errors: createErrors } = await dataClient.models.Invoice.create({
             userId,
             gmailMessageId: messageRef.id,
             attachmentId: attachment.attachmentId,
             s3Key,
             senderEmail,
-            receivedAt: new Date(parseInt(message.internalDate, 10)).toISOString(),
+            receivedAt: new Date(Number.parseInt(message.internalDate, 10)).toISOString(),
             status: 'PENDING',
             processingStep: 'PENDING',
-            createdAt: now,
-            updatedAt: now,
-            owner: userId,
-          };
+          });
 
-          console.log(`[${messageRef.id}] Creating invoice record: ${invoiceId}`);
-          await ddbClient.send(
-            new PutCommand({
-              TableName: INVOICE_TABLE,
-              Item: invoice,
-            })
-          );
+          if (createErrors) {
+            console.error(
+              `[${messageRef.id}] Create errors:`,
+              JSON.stringify(createErrors, null, 2)
+            );
+            continue;
+          }
 
-          invoicesToProcess.set(invoiceId, s3Key);
-          processedCount++;
-
-          console.log(`[${messageRef.id}] SUCCESS - Invoice created: ${invoiceId}`);
+          const invoiceId = created?.id;
+          if (invoiceId) {
+            invoicesToProcess.set(invoiceId, s3Key);
+            processedCount++;
+            console.log(`[${messageRef.id}] SUCCESS - Invoice created: ${invoiceId}`);
+          }
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -258,37 +218,41 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
       }
     }
 
-    // Update last poll time
-    await ddbClient.send(
-      new UpdateCommand({
-        TableName: SETTINGS_TABLE,
-        Key: { userId },
-        UpdateExpression: 'SET lastGmailPollAt = :now',
-        ExpressionAttributeValues: {
-          ':now': new Date().toISOString(),
-        },
-      })
-    );
+    // Update last poll time using Amplify
+    try {
+      const now = new Date().toISOString();
+      if (settings) {
+        await dataClient.models.UserSettings.update({
+          userId,
+          lastGmailPollAt: now,
+        });
+      } else {
+        await dataClient.models.UserSettings.create({
+          userId,
+          lastGmailPollAt: now,
+        });
+      }
+    } catch (error) {
+      console.error('Error updating user settings:', error);
+    }
 
     // Start Step Functions executions with aggressive throttling to respect Textract limits
-    // Textract has a limit of ~2 concurrent StartExpenseAnalysis calls per second
-    // Process one at a time with delays to avoid overwhelming Textract
-    const DELAY_BETWEEN_STARTS_MS = 3000; // 3 seconds between each start
+    const DELAY_BETWEEN_STARTS_MS = 3000;
     const invoiceArray = Array.from(invoicesToProcess.entries());
-    
-    console.log(`Starting ${invoiceArray.length} Step Functions executions with ${DELAY_BETWEEN_STARTS_MS}ms delays...`);
-    
+
+    console.log(
+      `Starting ${invoiceArray.length} Step Functions executions with ${DELAY_BETWEEN_STARTS_MS}ms delays...`
+    );
+
     for (let i = 0; i < invoiceArray.length; i++) {
       const [invoiceId, s3Key] = invoiceArray[i];
-      
+
       if (INVOICE_STATE_MACHINE_ARN) {
         try {
-          // Create a short, unique execution name (max 80 chars)
-          // Format: inv-<hash>-<timestamp>
           const hash = createHash('md5').update(invoiceId).digest('hex').substring(0, 16);
           const timestamp = Date.now();
           const executionName = `inv-${hash}-${timestamp}`;
-          
+
           const execution = await sfnClient.send(
             new StartExecutionCommand({
               stateMachineArn: INVOICE_STATE_MACHINE_ARN,
@@ -302,18 +266,15 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
             })
           );
 
-          // Update invoice with execution ARN
-          await ddbClient.send(
-            new UpdateCommand({
-              TableName: INVOICE_TABLE,
-              Key: { id: invoiceId },
-              UpdateExpression: 'SET stepFunctionExecutionArn = :arn, updatedAt = :now',
-              ExpressionAttributeValues: {
-                ':arn': execution.executionArn,
-                ':now': new Date().toISOString(),
-              },
-            })
-          );
+          // Update invoice with execution ARN using Amplify (triggers subscriptions)
+          const { errors: updateErrors } = await dataClient.models.Invoice.update({
+            id: invoiceId,
+            stepFunctionExecutionArn: execution.executionArn,
+          });
+
+          if (updateErrors) {
+            console.error(`Update errors for ${invoiceId}:`, JSON.stringify(updateErrors, null, 2));
+          }
 
           console.log(
             `[${i + 1}/${invoiceArray.length}] Started Step Functions execution for ${invoiceId}: ${execution.executionArn}`
@@ -322,10 +283,10 @@ export const handler: Handler<PollEvent, SyncResult> = async (event) => {
           console.error(`Failed to start Step Functions execution for ${invoiceId}:`, sfnError);
         }
       }
-      
+
       // Add delay between starts (except for the last one)
       if (i < invoiceArray.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_STARTS_MS));
+        await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_STARTS_MS));
       }
     }
 

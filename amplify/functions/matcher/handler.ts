@@ -40,6 +40,7 @@ interface TransactionRecord {
   unexplainedAmount?: number;
   contactName?: string;
   status?: string;
+  needsMatching?: boolean;
 }
 
 interface MatchRecord {
@@ -74,7 +75,7 @@ const REVIEW_THRESHOLD = parseFloat(process.env.REVIEW_THRESHOLD ?? '0.50');
 export const handler: Handler<MatchEvent> = async (event) => {
   const { invoiceId, userId } = event;
 
-  console.log(`Starting matching for invoice: ${invoiceId}`);
+  console.log(`Starting matching for invoice: ${invoiceId}, userId: ${userId}`);
 
   try {
     // Get invoice record
@@ -94,6 +95,22 @@ export const handler: Handler<MatchEvent> = async (event) => {
       console.log(`Invoice ${invoiceId} not ready for matching, status: ${invoice.status}`);
       return { skipped: true, status: invoice.status };
     }
+
+    // Require essential invoice data for meaningful matching
+    // Without vendorName and totalAmount, we can't do proper matching
+    if (!invoice.vendorName || invoice.vendorName.trim() === '') {
+      console.log(`Invoice ${invoiceId} skipped: missing vendorName`);
+      return { skipped: true, reason: 'missing_vendor_name' };
+    }
+
+    if (invoice.totalAmount === undefined || invoice.totalAmount === null) {
+      console.log(`Invoice ${invoiceId} skipped: missing totalAmount`);
+      return { skipped: true, reason: 'missing_total_amount' };
+    }
+
+    console.log(
+      `Invoice data: vendor="${invoice.vendorName}", amount=${invoice.totalAmount}, date=${invoice.invoiceDate ?? 'N/A'}, currency=${invoice.currency ?? 'N/A'}`
+    );
 
     // Get user settings for thresholds
     const settingsResponse = await ddbClient.send(
@@ -124,14 +141,24 @@ export const handler: Handler<MatchEvent> = async (event) => {
       })
     );
 
-    const transactions = (transactionsResponse.Items ?? []) as TransactionRecord[];
+    const allTransactions = (transactionsResponse.Items ?? []) as TransactionRecord[];
+
+    // Only match against transactions that need matching:
+    // - BANK_TRANSACTIONs with needsMatching = true (For Approval in FreeAgent)
+    // - BILLs always need matching (they need to be paid)
+    const transactions = allTransactions.filter((tx) => {
+      if (tx.type === 'BILL') return true;
+      return tx.needsMatching === true;
+    });
+
+    console.log(
+      `Found ${allTransactions.length} total transactions, ${transactions.length} need matching (For Approval)`
+    );
 
     if (transactions.length === 0) {
-      console.log('No transactions available for matching');
-      return { matched: false, reason: 'No transactions available' };
+      console.log('No transactions need matching');
+      return { matched: false, reason: 'No transactions need matching' };
     }
-
-    console.log(`Comparing against ${transactions.length} transactions`);
 
     // Convert to scoring format
     const invoiceForScoring: Invoice = {

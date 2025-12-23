@@ -113,7 +113,9 @@ export class FreeAgentClient {
     const expiresAt = new Date(tokens.expiresAt);
     const now = new Date();
 
-    console.log(`Token check: expires=${tokens.expiresAt}, now=${now.toISOString()}, useSandbox=${this.useSandbox}`);
+    console.log(
+      `Token check: expires=${tokens.expiresAt}, now=${now.toISOString()}, useSandbox=${this.useSandbox}`
+    );
 
     // Refresh if token expires in less than 5 minutes
     if (expiresAt.getTime() - now.getTime() < 5 * 60 * 1000) {
@@ -173,7 +175,7 @@ export class FreeAgentClient {
   private async freeagentRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const accessToken = await this.refreshTokenIfNeeded();
     const url = `${this.apiBase}${endpoint}`;
-    
+
     console.log(`FreeAgent API request: ${url}`);
 
     const response = await fetch(url, {
@@ -243,12 +245,16 @@ export class FreeAgentClient {
   }
 
   /**
-   * Get all bank transactions (including explained ones)
+   * Get bank transactions with optional view filter
+   * @param view - 'all' | 'unexplained' | 'explained' | 'marked_for_review' | 'manual' | 'imported'
    */
-  async getAllBankTransactions(fromDate?: Date): Promise<FreeAgentBankTransaction[]> {
+  async getBankTransactions(
+    fromDate?: Date,
+    view: 'all' | 'unexplained' | 'explained' | 'marked_for_review' | 'manual' | 'imported' = 'all'
+  ): Promise<FreeAgentBankTransaction[]> {
     // First get all bank accounts
     const bankAccounts = await this.getBankAccounts();
-    
+
     if (bankAccounts.length === 0) {
       console.log('No bank accounts found in FreeAgent');
       return [];
@@ -260,19 +266,22 @@ export class FreeAgentClient {
     for (const account of bankAccounts) {
       const params = new URLSearchParams();
       params.set('bank_account', account.url);
-      
+      params.set('view', view);
+
       if (fromDate) {
         params.set('from_date', fromDate.toISOString().split('T')[0]);
       }
 
-      console.log(`Fetching transactions for bank account: ${account.name}`);
-      
+      console.log(`Fetching ${view} transactions for bank account: ${account.name}`);
+
       try {
         const response = await this.freeagentRequest<BankTransactionsResponse>(
           `/bank_transactions?${params.toString()}`
         );
-        
-        console.log(`Found ${response.bank_transactions.length} transactions in ${account.name}`);
+
+        console.log(
+          `Found ${response.bank_transactions.length} ${view} transactions in ${account.name}`
+        );
         allTransactions.push(...response.bank_transactions);
       } catch (error) {
         console.error(`Error fetching transactions for ${account.name}:`, error);
@@ -283,6 +292,20 @@ export class FreeAgentClient {
   }
 
   /**
+   * Get all bank transactions (including explained ones)
+   */
+  async getAllBankTransactions(fromDate?: Date): Promise<FreeAgentBankTransaction[]> {
+    return this.getBankTransactions(fromDate, 'all');
+  }
+
+  /**
+   * Get transactions marked for review (For Approval in FreeAgent UI)
+   */
+  async getForApprovalTransactions(fromDate?: Date): Promise<FreeAgentBankTransaction[]> {
+    return this.getBankTransactions(fromDate, 'marked_for_review');
+  }
+
+  /**
    * Get unexplained bank transactions
    */
   async getUnexplainedBankTransactions(fromDate?: Date): Promise<FreeAgentBankTransaction[]> {
@@ -290,8 +313,8 @@ export class FreeAgentClient {
 
     // Filter for transactions with unexplained amounts
     return allTransactions.filter((tx) => {
-      const unexplained = parseFloat(tx.unexplained_amount);
-      return unexplained !== 0;
+      const unexplainedAmount = Number.parseFloat(tx.unexplained_amount);
+      return Math.abs(unexplainedAmount) > 0.01; // Use small threshold to avoid floating point issues
     });
   }
 

@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { Authenticator } from "@aws-amplify/ui-react";
+import { Authenticator } from '@aws-amplify/ui-react';
 
 interface AuthProviderProps {
   children: React.ReactNode;

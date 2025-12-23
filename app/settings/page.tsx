@@ -1,14 +1,14 @@
-"use client";
+'use client';
 
-import { fetchAuthSession } from "aws-amplify/auth";
-import { generateClient } from "aws-amplify/data";
-import { useEffect, useState } from "react";
-import type { Schema } from "@/amplify/data/resource";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { CheckCircle2, Mail, TrendingUp, AlertCircle, RefreshCw } from "lucide-react";
+import { fetchAuthSession } from 'aws-amplify/auth';
+import { generateClient } from 'aws-amplify/data';
+import { AlertCircle, CheckCircle2, Mail, RefreshCw, TrendingUp } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { Schema } from '@/amplify/data/resource';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 const client = generateClient<Schema>();
 
@@ -61,7 +61,7 @@ export default function SettingsPage() {
           });
         }
       } catch (error) {
-        console.error("Error checking connections:", error);
+        console.error('Error checking connections:', error);
       } finally {
         setLoading(false);
       }
@@ -73,13 +73,13 @@ export default function SettingsPage() {
   const connectGmail = () => {
     // Redirect to Gmail OAuth flow
     const params = new URLSearchParams({
-      client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "",
+      client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? '',
       redirect_uri: `${window.location.origin}/auth/gmail/callback`,
-      response_type: "code",
+      response_type: 'code',
       scope:
-        "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify",
-      access_type: "offline",
-      prompt: "consent",
+        'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify',
+      access_type: 'offline',
+      prompt: 'consent',
     });
 
     window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
@@ -88,20 +88,20 @@ export default function SettingsPage() {
   const connectFreeAgent = () => {
     // Redirect to FreeAgent OAuth flow
     const params = new URLSearchParams({
-      client_id: process.env.NEXT_PUBLIC_FREEAGENT_CLIENT_ID ?? "",
+      client_id: process.env.NEXT_PUBLIC_FREEAGENT_CLIENT_ID ?? '',
       redirect_uri: `${window.location.origin}/auth/freeagent/callback`,
-      response_type: "code",
+      response_type: 'code',
     });
 
     const baseUrl =
-      process.env.NEXT_PUBLIC_FREEAGENT_USE_SANDBOX === "true"
-        ? "https://api.sandbox.freeagent.com"
-        : "https://api.freeagent.com";
+      process.env.NEXT_PUBLIC_FREEAGENT_USE_SANDBOX === 'true'
+        ? 'https://api.sandbox.freeagent.com'
+        : 'https://api.freeagent.com';
 
     window.location.href = `${baseUrl}/v2/approve_app?${params.toString()}`;
   };
 
-  const disconnectService = async (provider: "GMAIL" | "FREEAGENT") => {
+  const disconnectService = async (provider: 'GMAIL' | 'FREEAGENT') => {
     if (!userId) return;
 
     try {
@@ -109,7 +109,7 @@ export default function SettingsPage() {
         id: `${userId}#${provider}`,
       });
 
-      if (provider === "GMAIL") {
+      if (provider === 'GMAIL') {
         setGmailStatus({ connected: false });
       } else {
         setFreeagentStatus({ connected: false });
@@ -150,9 +150,7 @@ export default function SettingsPage() {
               </div>
               <div className="flex-1">
                 <CardTitle>Gmail</CardTitle>
-                <CardDescription>
-                  Read invoices from email attachments
-                </CardDescription>
+                <CardDescription>Read invoices from email attachments</CardDescription>
               </div>
               {gmailStatus.connected ? (
                 <Badge variant="default" className="gap-1">
@@ -176,10 +174,7 @@ export default function SettingsPage() {
             )}
             <div className="flex gap-2">
               {gmailStatus.connected ? (
-                <Button
-                  onClick={() => disconnectService("GMAIL")}
-                  variant="outline"
-                >
+                <Button onClick={() => disconnectService('GMAIL')} variant="outline">
                   Disconnect
                 </Button>
               ) : (
@@ -201,9 +196,7 @@ export default function SettingsPage() {
               </div>
               <div className="flex-1">
                 <CardTitle>FreeAgent</CardTitle>
-                <CardDescription>
-                  Match invoices to transactions and bills
-                </CardDescription>
+                <CardDescription>Match invoices to transactions and bills</CardDescription>
               </div>
               {freeagentStatus.connected ? (
                 <Badge variant="default" className="gap-1">
@@ -227,10 +220,7 @@ export default function SettingsPage() {
             )}
             <div className="flex gap-2">
               {freeagentStatus.connected ? (
-                <Button
-                  onClick={() => disconnectService("FREEAGENT")}
-                  variant="outline"
-                >
+                <Button onClick={() => disconnectService('FREEAGENT')} variant="outline">
                   Disconnect
                 </Button>
               ) : (
@@ -254,7 +244,7 @@ export default function SettingsPage() {
               <p>Before connecting, you need to configure OAuth credentials:</p>
               <ol className="list-decimal list-inside space-y-2 ml-2">
                 <li>
-                  <strong>Gmail:</strong> Create OAuth credentials in the{" "}
+                  <strong>Gmail:</strong> Create OAuth credentials in the{' '}
                   <a
                     href="https://console.cloud.google.com/apis/credentials"
                     target="_blank"
@@ -265,7 +255,7 @@ export default function SettingsPage() {
                   </a>
                 </li>
                 <li>
-                  <strong>FreeAgent:</strong> Register your app at the{" "}
+                  <strong>FreeAgent:</strong> Register your app at the{' '}
                   <a
                     href="https://dev.freeagent.com/"
                     target="_blank"
@@ -277,14 +267,14 @@ export default function SettingsPage() {
                 </li>
               </ol>
               <p className="text-sm">
-                Set the environment variables{" "}
+                Set the environment variables{' '}
                 <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
                   NEXT_PUBLIC_GOOGLE_CLIENT_ID
-                </code>{" "}
-                and{" "}
+                </code>{' '}
+                and{' '}
                 <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
                   NEXT_PUBLIC_FREEAGENT_CLIENT_ID
-                </code>{" "}
+                </code>{' '}
                 in your deployment.
               </p>
             </div>

@@ -177,7 +177,11 @@ export const handler: Handler<BedrockEnhanceEvent, BedrockEnhanceResult> = async
   const mimeType = getMimeType(s3Key);
 
   // Call Bedrock for extraction, passing Textract data for context
-  const bedrockData = await extractInvoiceWithBedrock(Buffer.from(imageBytes), mimeType, extractedData);
+  const bedrockData = await extractInvoiceWithBedrock(
+    Buffer.from(imageBytes),
+    mimeType,
+    extractedData
+  );
 
   console.log(`Bedrock extraction result:`, JSON.stringify(bedrockData));
 
@@ -272,28 +276,29 @@ async function extractInvoiceWithBedrock(
 
   // Use 'document' type for PDFs, 'image' for images
   const contentType = mimeType.toLowerCase() === 'application/pdf' ? 'document' : 'image';
-  
+
   // Build the prompt with ALL candidate data from Textract for intelligent selection
   let promptText = INVOICE_EXTRACTION_PROMPT;
-  
+
   if (textractData) {
     // Format candidate amounts for clear presentation
-    const candidateAmountsText = textractData.candidateAmounts?.length 
-      ? textractData.candidateAmounts.map(a => 
-          `  - ${a.currency || '?'} ${a.value.toFixed(2)} (${a.type}: "${a.label || a.type}")`
-        ).join('\n')
+    const candidateAmountsText = textractData.candidateAmounts?.length
+      ? textractData.candidateAmounts
+          .map(
+            (a) =>
+              `  - ${a.currency || '?'} ${a.value.toFixed(2)} (${a.type}: "${a.label || a.type}")`
+          )
+          .join('\n')
       : '  (none detected)';
-    
+
     // Format candidate vendors
     const candidateVendorsText = textractData.candidateVendors?.length
-      ? textractData.candidateVendors.map(v => 
-          `  - "${v.name}" (${v.type})`
-        ).join('\n')
+      ? textractData.candidateVendors.map((v) => `  - "${v.name}" (${v.type})`).join('\n')
       : '  (none detected)';
-    
+
     // Format candidate dates
     const candidateDatesText = textractData.candidateDates?.length
-      ? textractData.candidateDates.map(d => `  - "${d}"`).join('\n')
+      ? textractData.candidateDates.map((d) => `  - "${d}"`).join('\n')
       : '  (none detected)';
 
     promptText += `
@@ -323,7 +328,7 @@ CURRENT BEST GUESSES (may be wrong):
 5. Convert dates to YYYY-MM-DD format
 6. Return corrected JSON`;
   }
-  
+
   const messages: BedrockMessage[] = [
     {
       role: 'user',

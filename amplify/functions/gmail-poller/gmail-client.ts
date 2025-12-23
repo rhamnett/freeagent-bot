@@ -198,7 +198,7 @@ export class GmailClient {
       const dateStr = sinceDate.toISOString().split('T')[0].replace(/-/g, '/');
       query.push(`after:${dateStr}`);
     }
-    
+
     // Filter by end date if provided
     if (beforeDate) {
       const dateStr = beforeDate.toISOString().split('T')[0].replace(/-/g, '/');
@@ -213,7 +213,9 @@ export class GmailClient {
       `/users/me/messages?q=${queryStr}&maxResults=${maxResults}`
     );
 
-    console.log(`Gmail response: ${response.messages?.length ?? 0} messages, resultSizeEstimate: ${response.resultSizeEstimate}`);
+    console.log(
+      `Gmail response: ${response.messages?.length ?? 0} messages, resultSizeEstimate: ${response.resultSizeEstimate}`
+    );
     return response.messages ?? [];
   }
 
@@ -238,13 +240,14 @@ export class GmailClient {
         if (part.filename && part.body?.attachmentId) {
           const mimeType = part.mimeType.toLowerCase();
           const filename = part.filename.toLowerCase();
-          
+
           // Check if it's a PDF or image
           // AWS sends PDFs with application/octet-stream, so also check filename extension
-          const isPdf = mimeType === 'application/pdf' || 
-                       (mimeType === 'application/octet-stream' && filename.endsWith('.pdf'));
+          const isPdf =
+            mimeType === 'application/pdf' ||
+            (mimeType === 'application/octet-stream' && filename.endsWith('.pdf'));
           const isImage = mimeType.startsWith('image/');
-          
+
           if (isPdf || isImage) {
             attachments.push({
               messageId: message.id,

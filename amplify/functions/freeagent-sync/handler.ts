@@ -1,22 +1,26 @@
 /**
  * @file amplify/functions/freeagent-sync/handler.ts
  * @description Lambda handler for syncing FreeAgent transactions and bills
+ * Uses Amplify Data client to trigger real-time subscriptions
  */
 
+import { getAmplifyDataClientConfig } from '@aws-amplify/backend/function/runtime';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  UpdateCommand,
-} from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
 import type { Handler } from 'aws-lambda';
-import {
-  type FreeAgentBankTransaction,
-  type FreeAgentBill,
-  FreeAgentClient,
-} from './freeagent-client';
+import { env } from '$amplify/env/freeagent-sync';
+import type { Schema } from '../../data/resource';
+import { FreeAgentClient } from './freeagent-client';
+
+// Configure Amplify for Lambda environment - MUST configure before generating client
+const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
+Amplify.configure(resourceConfig, libraryOptions);
+console.log('Amplify configured');
+
+export const dataClient = generateClient<Schema>();
+console.log('Generated Amplify Data client');
 
 interface SyncEvent {
   userId?: string;
@@ -41,66 +45,12 @@ interface OAuthConnection {
   email?: string;
 }
 
-interface UserSettings {
-  userId: string;
-  lastFreeAgentSyncAt?: string;
-}
-
-interface Transaction {
-  id: string;
-  userId: string;
-  freeagentUrl: string;
-  type: 'BANK_TRANSACTION' | 'BILL';
-  amount: number;
-  date: string;
-  description?: string;
-  unexplainedAmount?: number;
-  contactName?: string;
-  status?: string;
-  lastSyncedAt: string;
-  owner: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
+// DynamoDB client for OAuth reads only (doesn't need subscriptions)
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
 const OAUTH_TABLE = process.env.OAUTH_TABLE ?? '';
-const TRANSACTION_TABLE = process.env.TRANSACTION_TABLE ?? '';
-const SETTINGS_TABLE = process.env.SETTINGS_TABLE ?? '';
 const FREEAGENT_CLIENT_ID = process.env.FREEAGENT_CLIENT_ID ?? '';
 const FREEAGENT_CLIENT_SECRET = process.env.FREEAGENT_CLIENT_SECRET ?? '';
 const USE_SANDBOX = process.env.FREEAGENT_USE_SANDBOX === 'true';
-const FAKE_AWS_AS_UNEXPLAINED = process.env.FAKE_AWS_AS_UNEXPLAINED === 'true';
-
-/**
- * Find AWS transactions and fake them as unexplained for testing
- * This takes real explained transactions and marks them as unexplained
- */
-function fakeAwsAsUnexplained(
-  transactions: FreeAgentBankTransaction[]
-): FreeAgentBankTransaction[] {
-  const faked: FreeAgentBankTransaction[] = [];
-
-  for (const tx of transactions) {
-    // Check if this is an AWS transaction (already explained, so unexplained_amount would be 0)
-    const desc = tx.description?.toUpperCase() ?? '';
-    if (
-      desc.includes('AMAZON WEB SERVICES') ||
-      desc.includes('AWS') ||
-      desc.includes('AMAZON WEB SER')
-    ) {
-      console.log(`Found AWS transaction: ${tx.description} - faking as unexplained`);
-      // Clone the transaction but set unexplained_amount to the full amount
-      faked.push({
-        ...tx,
-        unexplained_amount: tx.amount, // Fake it as fully unexplained
-      });
-    }
-  }
-
-  return faked;
-}
 
 export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
   // Support both direct invocation and GraphQL mutation format
@@ -114,6 +64,7 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
 
   try {
     // Get OAuth connection for FreeAgent (id format: "{userId}#FREEAGENT")
+    // Using DynamoDB directly for OAuth - doesn't need subscriptions
     const oauthResponse = await ddbClient.send(
       new GetCommand({
         TableName: OAUTH_TABLE,
@@ -135,91 +86,81 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
       USE_SANDBOX
     );
 
-    // Get user settings for sync date range
-    const settingsResponse = await ddbClient.send(
-      new GetCommand({
-        TableName: SETTINGS_TABLE,
-        Key: { userId },
-      })
-    );
-
-    const settings = settingsResponse.Item as UserSettings | undefined;
-    const lastSyncDate = settings?.lastFreeAgentSyncAt
-      ? new Date(settings.lastFreeAgentSyncAt)
-      : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // Default to 90 days ago
+    // Always sync last 30 days
+    const lastSyncDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     let syncedCount = 0;
     const now = new Date().toISOString();
 
-    // Sync unexplained bank transactions
-    console.log('Fetching bank transactions...');
-    let bankTransactions = await freeagentClient.getUnexplainedBankTransactions(lastSyncDate);
+    // Only fetch transactions that need attention:
+    // 1. "For Approval" (marked_for_review) - FreeAgent guessed but needs user approval
+    // 2. Unexplained - no explanation yet
+    console.log('Fetching "For Approval" transactions...');
+    const forApprovalTransactions = await freeagentClient.getForApprovalTransactions(lastSyncDate);
+    console.log(`Found ${forApprovalTransactions.length} "For Approval" transactions`);
 
-    // For testing: find AWS transactions and fake them as unexplained
-    if (FAKE_AWS_AS_UNEXPLAINED) {
-      console.log('Looking for AWS transactions to fake as unexplained...');
-      const allTransactions = await freeagentClient.getAllBankTransactions(lastSyncDate);
-      const fakedAws = fakeAwsAsUnexplained(allTransactions);
-      if (fakedAws.length > 0) {
-        console.log(`Found ${fakedAws.length} AWS transactions to fake as unexplained`);
-        bankTransactions = [...bankTransactions, ...fakedAws];
+    console.log('Fetching unexplained transactions...');
+    const unexplainedTransactions = await freeagentClient.getUnexplainedBankTransactions(lastSyncDate);
+    console.log(`Found ${unexplainedTransactions.length} unexplained transactions`);
+
+    // Combine and dedupe by URL
+    const allTransactionsMap = new Map<string, typeof forApprovalTransactions[0]>();
+
+    for (const tx of forApprovalTransactions) {
+      allTransactionsMap.set(tx.url, tx);
+    }
+    for (const tx of unexplainedTransactions) {
+      if (!allTransactionsMap.has(tx.url)) {
+        allTransactionsMap.set(tx.url, tx);
       }
     }
 
-    console.log(`Found ${bankTransactions.length} unexplained transactions`);
+    const bankTransactions = Array.from(allTransactionsMap.values());
+    console.log(`Total unique transactions to sync: ${bankTransactions.length}`);
 
     for (const tx of bankTransactions) {
       try {
-        const transaction = await mapBankTransaction(tx, userId, now);
+        // Check if transaction exists using Amplify Data client
+        const { data: existingList } = await dataClient.models.Transaction.list({
+          filter: { freeagentUrl: { eq: tx.url } },
+          limit: 1,
+        });
 
-        // Check if transaction exists
-        const existing = await ddbClient.send(
-          new QueryCommand({
-            TableName: TRANSACTION_TABLE,
-            IndexName: 'byFreeagentUrl',
-            KeyConditionExpression: 'freeagentUrl = :url',
-            ExpressionAttributeValues: {
-              ':url': tx.url,
-            },
-            Limit: 1,
-          })
-        );
+        // All these transactions need matching (either For Approval or unexplained)
+        const needsMatching = true;
 
-        if (existing.Items && existing.Items.length > 0) {
-          // Update existing transaction
-          await ddbClient.send(
-            new UpdateCommand({
-              TableName: TRANSACTION_TABLE,
-              Key: { id: existing.Items[0].id },
-              UpdateExpression: `
-                SET amount = :amount,
-                    #date = :date,
-                    description = :description,
-                    unexplainedAmount = :unexplained,
-                    lastSyncedAt = :syncedAt,
-                    updatedAt = :updatedAt
-              `,
-              ExpressionAttributeNames: {
-                '#date': 'date',
-              },
-              ExpressionAttributeValues: {
-                ':amount': transaction.amount,
-                ':date': transaction.date,
-                ':description': transaction.description,
-                ':unexplained': transaction.unexplainedAmount,
-                ':syncedAt': now,
-                ':updatedAt': now,
-              },
-            })
-          );
+        const transactionData = {
+          userId,
+          freeagentUrl: tx.url,
+          type: 'BANK_TRANSACTION' as const,
+          amount: Math.abs(Number.parseFloat(tx.amount)),
+          date: tx.dated_on,
+          description: tx.description,
+          unexplainedAmount: Math.abs(Number.parseFloat(tx.unexplained_amount)),
+          needsMatching,
+          lastSyncedAt: now,
+        };
+
+        if (existingList && existingList.length > 0) {
+          // Update existing transaction via Amplify (triggers subscriptions)
+          const existing = existingList[0];
+          const { data: updated, errors: updateErrors } =
+            await dataClient.models.Transaction.update({
+              id: existing.id,
+              ...transactionData,
+            });
+          if (updateErrors) {
+            console.error('Update errors:', JSON.stringify(updateErrors, null, 2));
+          }
+          console.log(`Updated transaction: ${updated?.id}`);
         } else {
-          // Insert new transaction
-          await ddbClient.send(
-            new PutCommand({
-              TableName: TRANSACTION_TABLE,
-              Item: transaction,
-            })
-          );
+          // Create new transaction via Amplify (triggers subscriptions)
+          const { data: created, errors: createErrors } =
+            await dataClient.models.Transaction.create(transactionData);
+          if (createErrors) {
+            console.error('Create errors:', JSON.stringify(createErrors, null, 2));
+          }
+          console.log(`Created transaction: ${created?.id}`);
         }
 
         syncedCount++;
@@ -239,59 +180,44 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
         // Get contact name for the bill
         const contactName = await freeagentClient.getContactName(bill.contact);
 
-        const transaction = mapBill(bill, userId, contactName, now);
+        // Check if bill exists using Amplify Data client
+        const { data: existingList } = await dataClient.models.Transaction.list({
+          filter: { freeagentUrl: { eq: bill.url } },
+          limit: 1,
+        });
 
-        // Check if bill exists
-        const existing = await ddbClient.send(
-          new QueryCommand({
-            TableName: TRANSACTION_TABLE,
-            IndexName: 'byFreeagentUrl',
-            KeyConditionExpression: 'freeagentUrl = :url',
-            ExpressionAttributeValues: {
-              ':url': bill.url,
-            },
-            Limit: 1,
-          })
-        );
+        const transactionData = {
+          userId,
+          freeagentUrl: bill.url,
+          type: 'BILL' as const,
+          amount: Math.abs(Number.parseFloat(bill.due_value || bill.total_value)),
+          date: bill.dated_on,
+          description: bill.reference,
+          contactName,
+          status: bill.status,
+          lastSyncedAt: now,
+        };
 
-        if (existing.Items && existing.Items.length > 0) {
-          // Update existing bill
-          await ddbClient.send(
-            new UpdateCommand({
-              TableName: TRANSACTION_TABLE,
-              Key: { id: existing.Items[0].id },
-              UpdateExpression: `
-                SET amount = :amount,
-                    #date = :date,
-                    description = :description,
-                    contactName = :contactName,
-                    #status = :status,
-                    lastSyncedAt = :syncedAt,
-                    updatedAt = :updatedAt
-              `,
-              ExpressionAttributeNames: {
-                '#date': 'date',
-                '#status': 'status',
-              },
-              ExpressionAttributeValues: {
-                ':amount': transaction.amount,
-                ':date': transaction.date,
-                ':description': transaction.description,
-                ':contactName': transaction.contactName,
-                ':status': transaction.status,
-                ':syncedAt': now,
-                ':updatedAt': now,
-              },
-            })
-          );
+        if (existingList && existingList.length > 0) {
+          // Update existing bill via Amplify (triggers subscriptions)
+          const existing = existingList[0];
+          const { data: updated, errors: updateErrors } =
+            await dataClient.models.Transaction.update({
+              id: existing.id,
+              ...transactionData,
+            });
+          if (updateErrors) {
+            console.error('Bill update errors:', JSON.stringify(updateErrors, null, 2));
+          }
+          console.log(`Updated bill: ${updated?.id}`);
         } else {
-          // Insert new bill
-          await ddbClient.send(
-            new PutCommand({
-              TableName: TRANSACTION_TABLE,
-              Item: transaction,
-            })
-          );
+          // Create new bill via Amplify (triggers subscriptions)
+          const { data: created, errors: createErrors } =
+            await dataClient.models.Transaction.create(transactionData);
+          if (createErrors) {
+            console.error('Bill create errors:', JSON.stringify(createErrors, null, 2));
+          }
+          console.log(`Created bill: ${created?.id}`);
         }
 
         syncedCount++;
@@ -300,17 +226,25 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
       }
     }
 
-    // Update last sync time
-    await ddbClient.send(
-      new UpdateCommand({
-        TableName: SETTINGS_TABLE,
-        Key: { userId },
-        UpdateExpression: 'SET lastFreeAgentSyncAt = :now',
-        ExpressionAttributeValues: {
-          ':now': now,
-        },
-      })
-    );
+    // Update last sync time via Amplify Data client
+    try {
+      // Try to get existing settings
+      const { data: existingSettings } = await dataClient.models.UserSettings.get({ userId });
+
+      if (existingSettings) {
+        await dataClient.models.UserSettings.update({
+          userId,
+          lastFreeAgentSyncAt: now,
+        });
+      } else {
+        await dataClient.models.UserSettings.create({
+          userId,
+          lastFreeAgentSyncAt: now,
+        });
+      }
+    } catch (error) {
+      console.error('Error updating user settings:', error);
+    }
 
     console.log(`FreeAgent sync complete. Synced ${syncedCount} items.`);
 
@@ -328,57 +262,3 @@ export const handler: Handler<SyncEvent, SyncResult> = async (event) => {
     };
   }
 };
-
-/**
- * Map FreeAgent bank transaction to our Transaction model
- */
-async function mapBankTransaction(
-  tx: FreeAgentBankTransaction,
-  userId: string,
-  now: string
-): Promise<Transaction> {
-  const id = `${userId}-bank-${tx.url.split('/').pop()}`;
-
-  return {
-    id,
-    userId,
-    freeagentUrl: tx.url,
-    type: 'BANK_TRANSACTION',
-    amount: Math.abs(parseFloat(tx.amount)),
-    date: tx.dated_on,
-    description: tx.description,
-    unexplainedAmount: Math.abs(parseFloat(tx.unexplained_amount)),
-    lastSyncedAt: now,
-    owner: userId,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-/**
- * Map FreeAgent bill to our Transaction model
- */
-function mapBill(
-  bill: FreeAgentBill,
-  userId: string,
-  contactName: string,
-  now: string
-): Transaction {
-  const id = `${userId}-bill-${bill.url.split('/').pop()}`;
-
-  return {
-    id,
-    userId,
-    freeagentUrl: bill.url,
-    type: 'BILL',
-    amount: Math.abs(parseFloat(bill.due_value || bill.total_value)),
-    date: bill.dated_on,
-    description: bill.reference,
-    contactName,
-    status: bill.status,
-    lastSyncedAt: now,
-    owner: userId,
-    createdAt: now,
-    updatedAt: now,
-  };
-}

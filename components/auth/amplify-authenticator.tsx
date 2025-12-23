@@ -1,14 +1,8 @@
-"use client";
+'use client';
 
-import { Authenticator } from "@aws-amplify/ui-react";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Authenticator } from '@aws-amplify/ui-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 interface AmplifyAuthenticatorProps {
   children: (signOut: () => void) => React.ReactNode;
@@ -26,9 +20,7 @@ export function AmplifyAuthenticator({ children }: AmplifyAuthenticatorProps) {
           return (
             <div className="flex flex-col items-center gap-2 mb-6">
               <h1 className="text-3xl font-bold">FreeAgent Matcher</h1>
-              <p className="text-muted-foreground">
-                AI-powered invoice matching
-              </p>
+              <p className="text-muted-foreground">AI-powered invoice matching</p>
             </div>
           );
         },
@@ -49,9 +41,7 @@ export function AmplifyAuthenticator({ children }: AmplifyAuthenticatorProps) {
             return (
               <CardHeader className="space-y-1">
                 <CardTitle className="text-2xl">Create account</CardTitle>
-                <CardDescription>
-                  Enter your details to create a new account
-                </CardDescription>
+                <CardDescription>Enter your details to create a new account</CardDescription>
               </CardHeader>
             );
           },
@@ -62,4 +52,3 @@ export function AmplifyAuthenticator({ children }: AmplifyAuthenticatorProps) {
     </Authenticator>
   );
 }
-

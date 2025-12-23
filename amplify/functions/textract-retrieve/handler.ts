@@ -4,8 +4,8 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { GetExpenseAnalysisCommand, TextractClient } from '@aws-sdk/client-textract';
 import { SendTaskFailureCommand, SendTaskSuccessCommand, SFNClient } from '@aws-sdk/client-sfn';
+import { GetExpenseAnalysisCommand, TextractClient } from '@aws-sdk/client-textract';
 import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { Handler, SNSEvent } from 'aws-lambda';
 
@@ -64,6 +64,81 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const INVOICE_TABLE = process.env.INVOICE_TABLE ?? '';
 
+/**
+ * Parse various date formats and convert to ISO YYYY-MM-DD format
+ */
+function parseDate(dateStr: string): string | undefined {
+  if (!dateStr?.trim()) return undefined;
+
+  const cleaned = dateStr.trim();
+
+  // Try DD/MM/YYYY or DD-MM-YYYY (UK format)
+  const ukMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (ukMatch) {
+    const [, day, month, year] = ukMatch;
+    const d = Number.parseInt(day, 10);
+    const m = Number.parseInt(month, 10);
+    const y = Number.parseInt(year, 10);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 1900 && y <= 2100) {
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+  }
+
+  // Try YYYY-MM-DD (ISO format - already correct)
+  const isoMatch = cleaned.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  // Try Month DD, YYYY (e.g., "March 05, 2023")
+  const monthNames: Record<string, string> = {
+    january: '01',
+    february: '02',
+    march: '03',
+    april: '04',
+    may: '05',
+    june: '06',
+    july: '07',
+    august: '08',
+    september: '09',
+    october: '10',
+    november: '11',
+    december: '12',
+    jan: '01',
+    feb: '02',
+    mar: '03',
+    apr: '04',
+    jun: '06',
+    jul: '07',
+    aug: '08',
+    sep: '09',
+    oct: '10',
+    nov: '11',
+    dec: '12',
+  };
+  const monthMatch = cleaned.match(/^(\w+)\s+(\d{1,2}),?\s+(\d{4})$/i);
+  if (monthMatch) {
+    const [, monthName, day, year] = monthMatch;
+    const month = monthNames[monthName.toLowerCase()];
+    if (month) {
+      return `${year}-${month}-${day.padStart(2, '0')}`;
+    }
+  }
+
+  // Try DD Month YYYY (e.g., "05 March 2023")
+  const dayMonthMatch = cleaned.match(/^(\d{1,2})\s+(\w+)\s+(\d{4})$/i);
+  if (dayMonthMatch) {
+    const [, day, monthName, year] = dayMonthMatch;
+    const month = monthNames[monthName.toLowerCase()];
+    if (month) {
+      return `${year}-${month}-${day.padStart(2, '0')}`;
+    }
+  }
+
+  return undefined;
+}
+
 export const handler: Handler<SNSEvent> = async (event) => {
   console.log('Textract notification received', JSON.stringify(event, null, 2));
 
@@ -72,7 +147,9 @@ export const handler: Handler<SNSEvent> = async (event) => {
       const message = JSON.parse(record.Sns.Message) as TextractNotification;
       const { JobId, Status, API, JobTag } = message;
 
-      console.log(`Processing Textract job: ${JobId}, status: ${Status}, API: ${API}, tag: ${JobTag}`);
+      console.log(
+        `Processing Textract job: ${JobId}, status: ${Status}, API: ${API}, tag: ${JobTag}`
+      );
 
       // Get invoice record by jobId to find the task token
       const invoiceQuery = await ddbClient.send(
@@ -203,11 +280,8 @@ export const handler: Handler<SNSEvent> = async (event) => {
  * Extract currency from a value string (e.g., "GBP 174.43" -> "GBP")
  */
 function extractCurrency(value: string): string | undefined {
-  const currencyPatterns = [
-    /^(GBP|USD|EUR|£|\$|€)\s*/i,
-    /\s*(GBP|USD|EUR)$/i,
-  ];
-  
+  const currencyPatterns = [/^(GBP|USD|EUR|£|\$|€)\s*/i, /\s*(GBP|USD|EUR)$/i];
+
   for (const pattern of currencyPatterns) {
     const match = value.match(pattern);
     if (match) {
@@ -257,7 +331,12 @@ function extractExpenseData(response: any): ExtractedData {
       }
 
       // Collect vendor candidates
-      if (type === 'VENDOR_NAME' || type === 'NAME' || type === 'RECEIVER_NAME' || type === 'VENDOR') {
+      if (
+        type === 'VENDOR_NAME' ||
+        type === 'NAME' ||
+        type === 'RECEIVER_NAME' ||
+        type === 'VENDOR'
+      ) {
         if (value?.trim()) {
           result.candidateVendors.push({
             name: value.trim(),
@@ -268,29 +347,41 @@ function extractExpenseData(response: any): ExtractedData {
       }
 
       // Collect date candidates
-      if (type === 'INVOICE_RECEIPT_DATE' || type === 'ORDER_DATE' || type === 'DUE_DATE' || type === 'DATE') {
+      if (
+        type === 'INVOICE_RECEIPT_DATE' ||
+        type === 'ORDER_DATE' ||
+        type === 'DUE_DATE' ||
+        type === 'DATE'
+      ) {
         if (value?.trim() && !result.candidateDates.includes(value.trim())) {
           result.candidateDates.push(value.trim());
         }
-        // Set primary date (prefer INVOICE_RECEIPT_DATE)
+        // Set primary date (prefer INVOICE_RECEIPT_DATE) - convert to ISO format
         if (!result.invoiceDate && (type === 'INVOICE_RECEIPT_DATE' || type === 'ORDER_DATE')) {
-          result.invoiceDate = value;
+          result.invoiceDate = parseDate(value);
         }
         if (!result.dueDate && type === 'DUE_DATE') {
-          result.dueDate = value;
+          result.dueDate = parseDate(value);
         }
       }
 
       // Collect ALL amount candidates
-      if (type === 'TOTAL' || type === 'AMOUNT_DUE' || type === 'SUBTOTAL' || 
-          type === 'TAX' || type === 'AMOUNT' || type === 'PRICE' ||
-          type === 'NET_TOTAL' || type === 'GROSS_TOTAL') {
+      if (
+        type === 'TOTAL' ||
+        type === 'AMOUNT_DUE' ||
+        type === 'SUBTOTAL' ||
+        type === 'TAX' ||
+        type === 'AMOUNT' ||
+        type === 'PRICE' ||
+        type === 'NET_TOTAL' ||
+        type === 'GROSS_TOTAL'
+      ) {
         if (value) {
           const amount = parseFloat(value.replace(/[^0-9.-]/g, ''));
           if (!Number.isNaN(amount) && amount > 0) {
             const currency = extractCurrency(value);
             const amountKey = `${amount}-${currency || 'unknown'}-${type}`;
-            
+
             if (!seenAmounts.has(amountKey)) {
               seenAmounts.add(amountKey);
               result.candidateAmounts.push({
@@ -379,15 +470,15 @@ function extractExpenseData(response: any): ExtractedData {
   }
 
   // Set primary vendor: prefer VENDOR_NAME over NAME
-  const vendorNameCandidate = result.candidateVendors.find(v => v.type === 'VENDOR_NAME');
-  const nameCandidate = result.candidateVendors.find(v => v.type === 'NAME');
+  const vendorNameCandidate = result.candidateVendors.find((v) => v.type === 'VENDOR_NAME');
+  const nameCandidate = result.candidateVendors.find((v) => v.type === 'NAME');
   result.vendorName = vendorNameCandidate?.name || nameCandidate?.name;
 
   // Set primary totalAmount: prefer GBP TOTAL, then any TOTAL
-  const gbpTotal = result.candidateAmounts.find(a => a.type === 'TOTAL' && a.currency === 'GBP');
-  const anyTotal = result.candidateAmounts.find(a => a.type === 'TOTAL');
-  const amountDue = result.candidateAmounts.find(a => a.type === 'AMOUNT_DUE');
-  
+  const gbpTotal = result.candidateAmounts.find((a) => a.type === 'TOTAL' && a.currency === 'GBP');
+  const anyTotal = result.candidateAmounts.find((a) => a.type === 'TOTAL');
+  const amountDue = result.candidateAmounts.find((a) => a.type === 'AMOUNT_DUE');
+
   if (gbpTotal) {
     result.totalAmount = gbpTotal.value;
     result.currency = 'GBP';
@@ -405,10 +496,14 @@ function extractExpenseData(response: any): ExtractedData {
   // Calculate average confidence
   result.confidence = confidenceCount > 0 ? totalConfidence / confidenceCount / 100 : 0;
 
-  console.log(`Extracted ${result.candidateAmounts.length} candidate amounts:`, 
-    result.candidateAmounts.map(a => `${a.currency || '?'} ${a.value} (${a.type})`).join(', '));
-  console.log(`Extracted ${result.candidateVendors.length} candidate vendors:`,
-    result.candidateVendors.map(v => `${v.name} (${v.type})`).join(', '));
+  console.log(
+    `Extracted ${result.candidateAmounts.length} candidate amounts:`,
+    result.candidateAmounts.map((a) => `${a.currency || '?'} ${a.value} (${a.type})`).join(', ')
+  );
+  console.log(
+    `Extracted ${result.candidateVendors.length} candidate vendors:`,
+    result.candidateVendors.map((v) => `${v.name} (${v.type})`).join(', ')
+  );
 
   return result;
 }

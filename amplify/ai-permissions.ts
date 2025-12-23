@@ -28,7 +28,7 @@ export function attachAIPermissions(stack: Stack, lambdaRole: iam.IRole, identif
     })
   );
 
-  // Bedrock for Claude models (invoice extraction + vendor matching)
+  // Bedrock for Claude Sonnet 4.5 (invoice extraction + vendor matching)
   lambdaRole.attachInlinePolicy(
     new iam.Policy(stack, `${identifier}-BedrockPolicy`, {
       statements: [
@@ -37,15 +37,8 @@ export function attachAIPermissions(stack: Stack, lambdaRole: iam.IRole, identif
           effect: iam.Effect.ALLOW,
           actions: ['bedrock:InvokeModel'],
           resources: [
-            // Foundation models (direct access)
-            'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0',
-            'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0',
-            'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0',
-            'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0',
+            // Claude Sonnet 4.5 - foundation model and EU inference profile
             'arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0',
-            // EU cross-region inference profiles
-            'arn:aws:bedrock:*:*:inference-profile/eu.anthropic.claude-3-haiku-20240307-v1:0',
-            'arn:aws:bedrock:*:*:inference-profile/eu.anthropic.claude-3-5-sonnet-20241022-v2:0',
             'arn:aws:bedrock:*:*:inference-profile/eu.anthropic.claude-sonnet-4-5-20250929-v1:0',
           ],
         }),

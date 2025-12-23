@@ -48,9 +48,8 @@ interface BedrockResponse {
 // Use eu-west-1 for Bedrock as it supports cross-region inference profiles
 const bedrockClient = new BedrockRuntimeClient({ region: 'eu-west-1' });
 
-// Claude model IDs - using EU cross-region inference profiles
+// Claude Sonnet 4.5 - using EU cross-region inference profile
 const CLAUDE_SONNET_MODEL = 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0';
-const CLAUDE_HAIKU_MODEL = 'eu.anthropic.claude-3-haiku-20240307-v1:0';
 
 const INVOICE_EXTRACTION_PROMPT = `Analyze this invoice/receipt image and extract the following information in JSON format:
 
@@ -236,7 +235,7 @@ Return only the number, nothing else.`;
   ];
 
   const command = new InvokeModelCommand({
-    modelId: CLAUDE_HAIKU_MODEL, // Use faster/cheaper model for this
+    modelId: CLAUDE_SONNET_MODEL, // Use Sonnet 4.5 for vendor matching
     contentType: 'application/json',
     accept: 'application/json',
     body: JSON.stringify({

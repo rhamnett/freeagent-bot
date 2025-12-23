@@ -62,8 +62,11 @@ export const handler: Handler<TextractRequestEvent, TextractRequestResult> = asy
       },
       JobTag: invoiceId,
     };
-    
-    console.log('Starting Textract StartExpenseAnalysis with params:', JSON.stringify(textractParams, null, 2));
+
+    console.log(
+      'Starting Textract StartExpenseAnalysis with params:',
+      JSON.stringify(textractParams, null, 2)
+    );
     const startResponse = await textractClient.send(
       new StartExpenseAnalysisCommand(textractParams)
     );
@@ -80,7 +83,8 @@ export const handler: Handler<TextractRequestEvent, TextractRequestResult> = asy
       new UpdateCommand({
         TableName: INVOICE_TABLE,
         Key: { id: invoiceId },
-        UpdateExpression: 'SET textractJobId = :jobId, taskToken = :token, processingStep = :step, updatedAt = :now',
+        UpdateExpression:
+          'SET textractJobId = :jobId, taskToken = :token, processingStep = :step, updatedAt = :now',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':token': taskToken,

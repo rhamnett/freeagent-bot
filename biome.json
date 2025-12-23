@@ -16,6 +16,9 @@
     "includes": [
       "src/**",
       "amplify/**",
+      "app/**",
+      "components/**",
+      "lib/**",
       "!.git/",
       "!.next/",
       "!.turbo/",

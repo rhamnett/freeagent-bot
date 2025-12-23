@@ -1,0 +1,122 @@
+[
+  {
+    "id": "00fb695c-df10-4471-86cb-10b737205998",
+    "vendorName": "AMAZON WEB SERVICES EMEA SARL",
+    "totalAmount": 174.43,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-01",
+    "status": "EXTRACTED",
+    "invoiceNumber": "EUINGB25-6306742",
+    "senderEmail": "no-reply@tax-and-invoicing.us-east-1.amazonaws.com"
+  },
+  {
+    "id": "deabcf28-358a-49bb-9212-98a8096c6be7",
+    "vendorName": "Slack Technologies Limited",
+    "totalAmount": 8.4,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-03",
+    "status": "EXTRACTED",
+    "invoiceNumber": "SBIE-10256941",
+    "senderEmail": "feedback@slack.com"
+  },
+  {
+    "id": "dbc10e9c-fef7-4477-8af3-974c90738440",
+    "vendorName": "Uber",
+    "totalAmount": 5.7,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-03",
+    "status": "MATCHED",
+    "invoiceNumber": "AAG6T7GZ97X",
+    "senderEmail": "travel-noreply@uber.com"
+  },
+  {
+    "id": "b818eb48-5ab1-4397-9f9b-6b5f82cdccba",
+    "vendorName": "Base64 Limited",
+    "totalAmount": 1075.0,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-31",
+    "status": "EXTRACTED",
+    "invoiceNumber": "002",
+    "senderEmail": "gary.bennett@sbnca.com"
+  },
+  {
+    "id": "a584ff4d-2dbc-4180-a856-76f8caa48dd9",
+    "vendorName": "Base64 Limited",
+    "totalAmount": 1069.6,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-31",
+    "status": "EXTRACTED",
+    "invoiceNumber": "JP 418942 C",
+    "senderEmail": "gary.bennett@sbnca.com"
+  },
+  {
+    "id": "c108d503-8fb3-4091-9af8-0e310baccc30",
+    "vendorName": "Slack Technologies Limited",
+    "totalAmount": 8.4,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-03",
+    "status": "EXTRACTED",
+    "invoiceNumber": "SBIE-10256941",
+    "senderEmail": "feedback@slack.com"
+  },
+  {
+    "id": "87d636b0-2d83-4f15-9fd8-96787a032874",
+    "vendorName": "AJBell",
+    "totalAmount": 0.01,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-19",
+    "status": "EXTRACTED",
+    "invoiceNumber": null,
+    "senderEmail": "r.hamnett@gmail.com"
+  },
+  {
+    "id": "d05f0074-29dc-46aa-8104-4d27ed471bed",
+    "vendorName": "ZYBRA LLC",
+    "totalAmount": 12.84,
+    "currency": "USD",
+    "invoiceDate": "2025-11-28",
+    "status": "EXTRACTED",
+    "invoiceNumber": "SO-250000075665",
+    "senderEmail": "help@ridezybra.com"
+  },
+  {
+    "id": "c49a6248-5e63-45f9-872d-2e477350edb2",
+    "vendorName": "Fontainebleau Miami Beach",
+    "totalAmount": 1079.22,
+    "currency": "USD",
+    "invoiceDate": "2025-11-30",
+    "status": "EXTRACTED",
+    "invoiceNumber": "3324905",
+    "senderEmail": "noreplyreservations@fontainebleau.com"
+  },
+  {
+    "id": "12b21e6a-e90d-448b-a4da-7c311d03eb93",
+    "vendorName": "Simpson Burgess Nash Limited",
+    "totalAmount": 60.0,
+    "currency": "GBP",
+    "invoiceDate": "2025-11-28",
+    "status": "EXTRACTED",
+    "invoiceNumber": "SI-22738",
+    "senderEmail": "Mark.Burgess@sbnca.com"
+  },
+  {
+    "id": "1efe2931-4f34-433f-8700-e13b748c7fd4",
+    "vendorName": "Northern",
+    "totalAmount": 4.4,
+    "currency": "GBP",
+    "invoiceDate": "2025-12-10",
+    "status": "EXTRACTED",
+    "invoiceNumber": "AAG7JS4KXQN",
+    "senderEmail": "travel-noreply@uber.com"
+  },
+  {
+    "id": "483c2ad8-8b05-4905-86ec-fbf192b83a01",
+    "vendorName": "CodeRabbit Inc",
+    "totalAmount": 30.0,
+    "currency": "USD",
+    "invoiceDate": "2025-12-22",
+    "status": "EXTRACTED",
+    "invoiceNumber": "CR-2025-12-104544",
+    "senderEmail": "support@coderabbit.ai"
+  }
+]

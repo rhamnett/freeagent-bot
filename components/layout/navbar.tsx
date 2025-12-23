@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
 
 interface NavbarProps {
   signOut?: () => void;
@@ -15,16 +15,10 @@ export function Navbar({ signOut }: NavbarProps) {
           FreeAgent Matcher
         </Link>
         <div className="flex gap-6 items-center flex-1">
-          <Link
-            href="/"
-            className="text-sm font-medium transition-colors hover:text-primary"
-          >
+          <Link href="/" className="text-sm font-medium transition-colors hover:text-primary">
             Dashboard
           </Link>
-          <Link
-            href="/queue"
-            className="text-sm font-medium transition-colors hover:text-primary"
-          >
+          <Link href="/queue" className="text-sm font-medium transition-colors hover:text-primary">
             Queue
           </Link>
           <Link
@@ -43,4 +37,3 @@ export function Navbar({ signOut }: NavbarProps) {
     </nav>
   );
 }
-

@@ -210,9 +210,13 @@ export async function calculateMatchScore(
   let totalScore = 0;
 
   // Get the transaction amount to compare against
+  // For "For Approval" transactions, unexplainedAmount is 0 (FreeAgent auto-matched),
+  // so we use the full amount. For truly unexplained transactions, use unexplainedAmount.
   const transactionAmount =
     transaction.type === 'BANK_TRANSACTION'
-      ? (transaction.unexplainedAmount ?? transaction.amount)
+      ? transaction.unexplainedAmount && transaction.unexplainedAmount > 0
+        ? transaction.unexplainedAmount
+        : transaction.amount
       : transaction.amount;
 
   // Handle currency conversion if needed
